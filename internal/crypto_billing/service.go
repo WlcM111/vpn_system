@@ -1,0 +1,365 @@
+package crypto_billing
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	commonkafka "vpn-platform/internal/common/kafka"
+	"vpn-platform/internal/common/outbox"
+	kafkacontracts "vpn-platform/internal/contracts/kafka"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+)
+
+// Sentinel ошибки. ErrDuplicateWebhook ловится в HTTP-хендлере и превращается в 200 OK
+// (для CryptoBot это значит "не ретраить"). ErrInvoiceNotFound — наоборот, возвращаем 4xx,
+// чтобы CryptoBot повторил позже на случай гонки (вдруг инвойс ещё не докоммитился).
+var (
+	ErrDuplicateWebhook = errors.New("duplicate cryptobot webhook")
+	ErrInvoiceNotFound  = errors.New("crypto invoice not found")
+)
+
+type Service struct {
+	cfg      Config
+	repo     *Repository
+	client   *CryptoBotClient
+	producer *commonkafka.Producer
+}
+
+func NewService(cfg Config, repo *Repository, client *CryptoBotClient, producer *commonkafka.Producer) *Service {
+	return &Service{cfg: cfg, repo: repo, client: client, producer: producer}
+}
+
+// ============================================================================
+// Сценарий 1: обработка команды create_checkout из Kafka топика crypto.commands
+// ============================================================================
+
+// HandleCreateCheckout — главный entry-point для команды. Структура такая:
+//  1. Транзакция №1: dedup по command_id + insert инвойса в статусе 'creating'
+//  2. Внешний вызов CryptoBot.createInvoice (вне транзакции, иначе блокируем коннект пула)
+//  3. Транзакция №2: обновляем инвойс на 'active' и кладём в outbox уведомление пользователю
+//
+// Между шагами 2 и 3 — единственная "дыра", где краш приведёт к висящему инвойсу.
+// В v1 принимаем; см. service.go в шапке файла.
+func (s *Service) HandleCreateCheckout(ctx context.Context, cmd *kafkacontracts.CreateCryptoCheckoutCommand) error {
+	if cmd == nil {
+		return fmt.Errorf("nil create crypto checkout command")
+	}
+
+	plan, ok := s.cfg.Plans[cmd.PlanCode]
+	if !ok {
+		return fmt.Errorf("unsupported plan code: %s", cmd.PlanCode)
+	}
+
+	// Если бот не указал актив явно, используем дефолт сервиса.
+	asset := cmd.Asset
+	if asset == "" {
+		asset = s.cfg.DefaultAsset
+	}
+	amount, ok := plan.Prices[asset]
+	if !ok || amount == "" {
+		return fmt.Errorf("no price configured for plan=%s asset=%s", cmd.PlanCode, asset)
+	}
+
+	// order_id — наш собственный идентификатор инвойса; кладём его в payload CryptoBot,
+	// чтобы при необходимости найти инвойс по нему в API CryptoBot. CryptoBot ничего
+	// специально с этим не делает — просто возвращает обратно в вебхуке.
+	orderID := "crypto-" + uuid.NewString()
+	expiresAt := time.Now().UTC().Add(s.cfg.InvoiceExpires)
+
+	// ----- Транзакция 1: dedup команды + создание записи в статусе 'creating' -----
+	tx, err := s.repo.BeginTx(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// processed_messages — единая для всего проекта таблица идемпотентности.
+	// Ключ message_id строится как "crypto-billing-service:<command_id>".
+	// Если такой command_id уже обрабатывался — выходим, ничего не делая.
+	inserted, err := outbox.MarkProcessed(ctx, tx, "crypto-billing-service", cmd.CommandID, string(cmd.Type))
+	if err != nil {
+		return err
+	}
+	if !inserted {
+		slog.Info("crypto-billing duplicate command ignored",
+			"command_id", cmd.CommandID,
+			"telegram_id", cmd.TelegramID,
+		)
+		return tx.Commit(ctx)
+	}
+
+	invRec := &CryptoInvoice{
+		OrderID:      orderID,
+		CommandID:    cmd.CommandID,
+		TelegramID:   cmd.TelegramID,
+		PlanCode:     string(cmd.PlanCode),
+		DurationDays: plan.DurationDays,
+		Asset:        string(asset),
+		AmountValue:  amount,
+		Description:  plan.Title,
+		ExpiresAt:    &expiresAt,
+	}
+	if _, err := s.repo.InsertInvoiceTx(ctx, tx, invRec); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	// ----- Внешний вызов CryptoBot API (вне транзакции) -----
+	inv, rawCreate, createErr := s.client.CreateInvoice(
+		ctx,
+		asset,
+		amount,
+		plan.Title,
+		orderID, // payload — вернётся в webhook'е
+		s.cfg.PaidBtnName,
+		s.cfg.PaidBtnURL,
+		s.cfg.InvoiceExpires,
+	)
+
+	// Если создание упало — фиксируем причину в БД и шлём пользователю сообщение.
+	if createErr != nil {
+		slog.Error("cryptobot createInvoice failed",
+			"order_id", orderID,
+			"telegram_id", cmd.TelegramID,
+			"err", createErr,
+		)
+
+		failTx, txErr := s.repo.BeginTx(ctx)
+		if txErr != nil {
+			return createErr // отдадим исходную ошибку, чтобы Kafka сделал retry
+		}
+		defer func() { _ = failTx.Rollback(ctx) }()
+
+		if err := s.repo.MarkInvoiceFailedTx(ctx, failTx, orderID, createErr.Error()); err != nil {
+			return err
+		}
+		if err := s.notifyTx(ctx, failTx, kafkacontracts.TgNotification{
+			TelegramID: cmd.TelegramID,
+			Message:    "Не удалось создать счёт на оплату криптой. Попробуй позже или выбери оплату картой.",
+			Keyboard:   kafkacontracts.TgKeyboardBuyMenu,
+		}); err != nil {
+			return err
+		}
+		return failTx.Commit(ctx)
+	}
+
+	payURL := PickPayURL(inv)
+	invoiceIDStr := fmt.Sprint(inv.InvoiceID)
+
+	// ----- Транзакция 2: обновляем инвойс на 'active' + outbox-уведомление пользователю -----
+	tx, err = s.repo.BeginTx(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := s.repo.MarkInvoiceActiveTx(ctx, tx, orderID, invoiceIDStr, payURL, rawCreate); err != nil {
+		return err
+	}
+
+	if err := s.notifyTx(ctx, tx, kafkacontracts.TgNotification{
+		TelegramID: cmd.TelegramID,
+		ParseMode:  "Markdown",
+		Message:    s.buildPayLinkMessage(plan.Title, amount, string(asset), payURL, expiresAt),
+		Keyboard:   kafkacontracts.TgKeyboardMainMenuWithBack,
+	}); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+// buildPayLinkMessage собирает Markdown-сообщение со ссылкой оплаты.
+// Ссылка остаётся "голой" (не embedded в Markdown-ссылку), чтобы её можно было
+// явно скопировать на мобильном Telegram-клиенте, если автооткрытие не сработает.
+func (s *Service) buildPayLinkMessage(title, amount, asset, payURL string, expiresAt time.Time) string {
+	var sb strings.Builder
+	sb.WriteString("🪙 *Оплата криптовалютой*\n\n")
+	sb.WriteString("*" + title + "*\n")
+	sb.WriteString(fmt.Sprintf("Сумма: *%s %s*\n", amount, asset))
+	sb.WriteString(fmt.Sprintf("Счёт действует до: *%s UTC*\n\n", expiresAt.Format("02.01.2006 15:04")))
+	sb.WriteString("Перейди по ссылке и подтверди оплату:\n")
+	sb.WriteString(payURL + "\n\n")
+	sb.WriteString("Как только платёж пройдёт, бот пришлёт подтверждение и ключи доступа.")
+	return sb.String()
+}
+
+// ============================================================================
+// Сценарий 2: обработка webhook'а от CryptoBot
+// ============================================================================
+
+// CryptoBotWebhookUpdate — корневая обёртка webhook'а CryptoBot.
+type CryptoBotWebhookUpdate struct {
+	UpdateID    int64           `json:"update_id"`
+	UpdateType  string          `json:"update_type"`
+	RequestDate string          `json:"request_date"`
+	Payload     json.RawMessage `json:"payload"`
+}
+
+// CryptoBotInvoicePayload — структура поля payload для update_type="invoice_paid".
+// "invoice_paid" — единственный тип update, который нам интересен в v1.
+type CryptoBotInvoicePayload struct {
+	InvoiceID  int64  `json:"invoice_id"`
+	Status     string `json:"status"`
+	Hash       string `json:"hash"`
+	Asset      string `json:"asset"`
+	Amount     string `json:"amount"`
+	Payload    string `json:"payload"` // совпадает с нашим order_id
+	PaidAt     string `json:"paid_at"`
+	PaidAnonym bool   `json:"paid_anonymously"`
+}
+
+// ProcessWebhook — entry-point для HTTP-хендлера webhook'а. HMAC + URL-токен уже
+// проверены до вызова. fingerprint — sha256(raw_body) для дедупа.
+func (s *Service) ProcessWebhook(ctx context.Context, raw []byte, fingerprint string) error {
+	var update CryptoBotWebhookUpdate
+	if err := json.Unmarshal(raw, &update); err != nil {
+		return fmt.Errorf("decode webhook: %w", err)
+	}
+
+	// На v1 нас интересует только "invoice_paid". Другие типы (invoice_expired, и т.д.)
+	// можно будет добавить позже.
+	if update.UpdateType != "invoice_paid" {
+		slog.Debug("crypto-billing webhook ignored", "update_type", update.UpdateType)
+		return nil
+	}
+
+	var ip CryptoBotInvoicePayload
+	if err := json.Unmarshal(update.Payload, &ip); err != nil {
+		return fmt.Errorf("decode invoice payload: %w", err)
+	}
+	invoiceIDStr := fmt.Sprint(ip.InvoiceID)
+	if invoiceIDStr == "" || invoiceIDStr == "0" {
+		return fmt.Errorf("empty invoice_id in webhook")
+	}
+
+	// ----- Всё в одной транзакции -----
+	tx, err := s.repo.BeginTx(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Шаг 1: дедуп по fingerprint. Если вебхук уже видели — выходим с ErrDuplicateWebhook,
+	// который HTTP-хендлер превратит в 200 OK.
+	inserted, err := s.repo.RecordWebhookFingerprintTx(ctx, tx, update.UpdateType, invoiceIDStr, fingerprint, raw)
+	if err != nil {
+		return err
+	}
+	if !inserted {
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		return ErrDuplicateWebhook
+	}
+
+	// Шаг 2: найти инвойс. FOR UPDATE блокирует строку.
+	// Если инвойса нет — вернём ErrInvoiceNotFound, HTTP-хендлер вернёт 4xx, CryptoBot
+	// повторит позже. Это нормальное поведение при гонке (теоретически возможно, если
+	// CryptoBot ретраит вебхук быстрее, чем мы успели закоммитить транзакцию №2 в HandleCreateCheckout).
+	inv, err := s.repo.GetInvoiceByInvoiceIDTx(ctx, tx, invoiceIDStr)
+	if err != nil {
+		return fmt.Errorf("%w: invoice_id=%s err=%v", ErrInvoiceNotFound, invoiceIDStr, err)
+	}
+
+	// Шаг 3: пометить как paid. Если уже был paid — UPDATE не сработает (RowsAffected=0).
+	updated, err := s.repo.MarkInvoicePaidTx(ctx, tx, inv.OrderID, raw)
+	if err != nil {
+		return err
+	}
+	if !updated {
+		// Уже был paid (например, повторный webhook с другим body, но тот же invoice_id).
+		// Защитная сеть: коммитим транзакцию (fingerprint мы уже записали, и это нормально)
+		// и не публикуем дублирующее событие.
+		slog.Info("crypto-billing invoice already paid, skipping event publish",
+			"invoice_id", invoiceIDStr, "order_id", inv.OrderID,
+		)
+		return tx.Commit(ctx)
+	}
+
+	// Шаг 4: опубликовать в billing.events событие совместимого с YooKassa формата.
+	// user-subscription-service и vpn-orchestrator не различают провайдеров на уровне обработки.
+	paidAt := time.Now().UTC()
+	if err := s.publishBillingEventTx(ctx, tx, &kafkacontracts.BillingPaymentSucceededEvent{
+		Type:         kafkacontracts.BillingEventPaymentSucceeded,
+		CheckoutType: kafkacontracts.BillingCheckoutTypeSubscription,
+		ChargeSource: kafkacontracts.BillingChargeSourceInitial,
+		TelegramID:   inv.TelegramID,
+		OrderID:      inv.OrderID,
+		// Префикс "crypto:" защищает от теоретической коллизии invoice_id с UUID YooKassa
+		// в общей таблице processed_messages, где user-sub дедупит по "payment:<paymentID>".
+		PaymentID:        "crypto:" + invoiceIDStr,
+		PlanCode:         kafkacontracts.PlanCode(inv.PlanCode),
+		DurationDays:     inv.DurationDays,
+		AmountValue:      inv.AmountValue,
+		Currency:         inv.Asset,
+		PaymentMethodID:  "",
+		AttemptNo:        0,
+		AutoRenewEnabled: false,
+		PaidAt:           paidAt,
+		PaymentProvider:  string(kafkacontracts.BillingPaymentProviderCryptoBot),
+	}); err != nil {
+		return err
+	}
+
+	// Шаг 5: дополнительная нотификация пользователю "оплата получена".
+	// user-subscription пришлёт своё сообщение "подписка активна" чуть позже, но мы хотим,
+	// чтобы пользователь сразу видел подтверждение факта оплаты. Это улучшает UX.
+	if err := s.notifyTx(ctx, tx, kafkacontracts.TgNotification{
+		TelegramID: inv.TelegramID,
+		Message: fmt.Sprintf(
+			"✅ Оплата %s %s получена. Активирую подписку...",
+			inv.AmountValue, inv.Asset,
+		),
+		Keyboard: kafkacontracts.TgKeyboardMainMenuWithBack,
+	}); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+// ============================================================================
+// Outbox helpers — обёртки, чтобы handler-функции выглядели читаемо
+// ============================================================================
+
+// notifyTx кладёт TgNotification в outbox в рамках открытой транзакции.
+// outbox-worker возьмёт его и опубликует в Kafka топик tg.notifications.
+func (s *Service) notifyTx(ctx context.Context, tx pgx.Tx, n kafkacontracts.TgNotification) error {
+	if n.TelegramID == 0 {
+		return nil
+	}
+	return outbox.AddTx(ctx, tx, outbox.Event{
+		AggregateType: "telegram",
+		AggregateID:   fmt.Sprint(n.TelegramID),
+		Topic:         commonkafka.TopicTgNotifications,
+		MessageKey:    fmt.Sprint(n.TelegramID),
+		EventType:     "tg.notification",
+		Payload:       n,
+	})
+}
+
+// publishBillingEventTx кладёт BillingPaymentSucceededEvent в outbox.
+// Тот же топик billing.events, который слушает user-subscription-service.
+// Ключ сообщения — telegram_id, чтобы все события одного пользователя попадали в одну партицию
+// и обрабатывались по порядку.
+func (s *Service) publishBillingEventTx(ctx context.Context, tx pgx.Tx, event *kafkacontracts.BillingPaymentSucceededEvent) error {
+	key := fmt.Sprint(event.TelegramID)
+	return outbox.AddTx(ctx, tx, outbox.Event{
+		AggregateType: "billing",
+		AggregateID:   key,
+		Topic:         commonkafka.TopicBillingEvents,
+		MessageKey:    key,
+		EventType:     string(event.Type),
+		Payload:       event,
+	})
+}

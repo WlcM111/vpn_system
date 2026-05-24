@@ -1,0 +1,530 @@
+package vpn_orchestrator
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+var ErrAccessNotFound = errors.New("subscription access not found")
+
+type Repository struct {
+	pool *pgxpool.Pool
+}
+
+func NewRepository(pool *pgxpool.Pool) *Repository {
+	return &Repository{pool: pool}
+}
+
+type AccessState struct {
+	TelegramID  int64
+	Status      string
+	AccessUntil *time.Time
+	GraceUntil  *time.Time
+	AccessRev   int64
+	CountryCode string
+}
+
+type PoolItem struct {
+	ID          int64
+	ItemKey     string
+	ServerKey   string
+	NodeID      string
+	CountryCode string
+	Title       string
+	ProfileType string
+	Enabled     bool
+	SortOrder   int
+
+	PublicHost string
+	Port       int
+	Transport  string
+	Security   string
+	HostHeader string
+	SNI        string
+	WSPath     string
+	InboundTag string
+	Flow       string
+	Level      uint32
+}
+
+type UserCredential struct {
+	TelegramID int64
+	ItemKey    string
+	ServerKey  string
+	NodeID     string
+	InboundTag string
+	Email      string
+	VLESSUUID  string
+	AccessRev  int64
+	Enabled    bool
+}
+
+type FeedItem struct {
+	PoolItem   PoolItem
+	Credential UserCredential
+	URL        string
+}
+
+func (r *Repository) GetAccessByToken(ctx context.Context, token string) (*AccessState, error) {
+	row := r.pool.QueryRow(ctx, `
+		SELECT
+			us.telegram_id,
+			us.status,
+			us.expires_at,
+			us.grace_until,
+			us.access_rev,
+			us.country_code
+		FROM subscription_tokens st
+		JOIN user_subscriptions us ON us.telegram_id = st.telegram_id
+		WHERE st.token = $1 AND st.revoked_at IS NULL
+	`, token)
+
+	state, err := scanAccessState(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrAccessNotFound
+		}
+		return nil, fmt.Errorf("get access by token: %w", err)
+	}
+
+	return state, nil
+}
+
+func (r *Repository) ListEnabledPoolItems(ctx context.Context) ([]PoolItem, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT
+			pi.id,
+			pi.item_key,
+			pi.server_key,
+			vs.node_id,
+			pi.country_code,
+			pi.title,
+			pi.profile_type,
+			pi.enabled,
+			pi.sort_order,
+			vs.public_host,
+			vs.port,
+			vs.transport,
+			vs.security,
+			COALESCE(NULLIF(pi.host_header, ''), NULLIF(vs.host_header, ''), vs.public_host),
+			COALESCE(NULLIF(pi.sni, ''), NULLIF(vs.sni, ''), vs.public_host),
+			COALESCE(NULLIF(pi.ws_path, ''), NULLIF(vs.ws_path, ''), '/ws'),
+			COALESCE(NULLIF(pi.inbound_tag, ''), NULLIF(vs.default_inbound_tag, ''), 'vless-ws-tls'),
+			COALESCE(NULLIF(pi.flow, ''), vs.flow, ''),
+			pi.level
+		FROM vpn_pool_items pi
+		JOIN vpn_servers vs ON vs.server_key = pi.server_key
+		WHERE pi.enabled = true
+		  AND vs.enabled = true
+		  AND vs.node_id <> ''
+		  AND vs.public_host <> ''
+		ORDER BY pi.sort_order ASC, pi.id ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list enabled pool items: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]PoolItem, 0)
+	for rows.Next() {
+		var item PoolItem
+		var level int
+		if err := rows.Scan(
+			&item.ID,
+			&item.ItemKey,
+			&item.ServerKey,
+			&item.NodeID,
+			&item.CountryCode,
+			&item.Title,
+			&item.ProfileType,
+			&item.Enabled,
+			&item.SortOrder,
+			&item.PublicHost,
+			&item.Port,
+			&item.Transport,
+			&item.Security,
+			&item.HostHeader,
+			&item.SNI,
+			&item.WSPath,
+			&item.InboundTag,
+			&item.Flow,
+			&level,
+		); err != nil {
+			return nil, fmt.Errorf("scan pool item: %w", err)
+		}
+		if level < 0 {
+			level = 0
+		}
+		item.Level = uint32(level)
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pool items: %w", err)
+	}
+	return items, nil
+}
+
+func (r *Repository) EnsureCredentialsForItems(ctx context.Context, telegramID int64, accessRev int64, items []PoolItem) ([]FeedItem, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	out := make([]FeedItem, 0, len(items))
+	for _, item := range items {
+		newUUID := uuid.NewString()
+		email := buildEmail(telegramID, item.ItemKey)
+
+		row := tx.QueryRow(ctx, `
+			INSERT INTO vpn_user_node_credentials (
+				telegram_id, item_key, server_key, node_id, inbound_tag,
+				email, vless_uuid, access_rev, enabled
+			)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true)
+			ON CONFLICT (telegram_id, item_key) DO UPDATE SET
+				server_key = EXCLUDED.server_key,
+				node_id = EXCLUDED.node_id,
+				inbound_tag = EXCLUDED.inbound_tag,
+				access_rev = GREATEST(vpn_user_node_credentials.access_rev, EXCLUDED.access_rev),
+				enabled = true,
+				updated_at = now()
+			RETURNING telegram_id, item_key, server_key, node_id, inbound_tag,
+			          email, vless_uuid, access_rev, enabled
+		`, telegramID, item.ItemKey, item.ServerKey, item.NodeID, item.InboundTag, email, newUUID, accessRev)
+
+		cred, err := scanCredential(row)
+		if err != nil {
+			return nil, fmt.Errorf("ensure credential item_key=%s: %w", item.ItemKey, err)
+		}
+
+		out = append(out, FeedItem{
+			PoolItem:   item,
+			Credential: *cred,
+			URL:        BuildVLESSURL(item, *cred),
+		})
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit tx: %w", err)
+	}
+	return out, nil
+}
+
+func (r *Repository) DisableUserCredentials(ctx context.Context, telegramID int64, accessRev int64) ([]UserCredential, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	rows, err := tx.Query(ctx, `
+		UPDATE vpn_user_node_credentials
+		SET enabled = false,
+		    access_rev = GREATEST(access_rev, $2),
+		    updated_at = now()
+		WHERE telegram_id = $1
+		RETURNING telegram_id, item_key, server_key, node_id, inbound_tag,
+		          email, vless_uuid, access_rev, enabled
+	`, telegramID, accessRev)
+	if err != nil {
+		return nil, fmt.Errorf("disable credentials: %w", err)
+	}
+	defer rows.Close()
+
+	var out []UserCredential
+	for rows.Next() {
+		cred, err := scanCredential(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan disabled credential: %w", err)
+		}
+		out = append(out, *cred)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate disabled credentials: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit tx: %w", err)
+	}
+	return out, nil
+}
+
+func (r *Repository) UpsertAccessProjection(ctx context.Context, state *AccessState, eventType string, eventAt time.Time) error {
+	if state == nil {
+		return nil
+	}
+	if state.CountryCode == "" {
+		state.CountryCode = "ALL"
+	}
+
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO vpn_user_access (
+			telegram_id, status, access_until, grace_until, access_rev,
+			country_code, last_event_type, last_event_at
+		)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		ON CONFLICT (telegram_id) DO UPDATE SET
+			status = EXCLUDED.status,
+			access_until = EXCLUDED.access_until,
+			grace_until = EXCLUDED.grace_until,
+			access_rev = EXCLUDED.access_rev,
+			country_code = EXCLUDED.country_code,
+			last_event_type = EXCLUDED.last_event_type,
+			last_event_at = EXCLUDED.last_event_at,
+			updated_at = now()
+		WHERE vpn_user_access.access_rev <= EXCLUDED.access_rev
+	`, state.TelegramID, state.Status, state.AccessUntil, state.GraceUntil, state.AccessRev, state.CountryCode, eventType, eventAt.UTC())
+	if err != nil {
+		return fmt.Errorf("upsert access projection: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) UpdateNodeHeartbeat(ctx context.Context, nodeID string, serverKey string, at time.Time) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE vpn_servers
+		SET last_heartbeat_at = $3,
+		    updated_at = now()
+		WHERE node_id = $1
+		  AND ($2 = '' OR server_key = $2)
+	`, nodeID, serverKey, at.UTC())
+	if err != nil {
+		return fmt.Errorf("update node heartbeat: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) SaveNodeSyncResult(ctx context.Context, nodeID, serverKey string, telegramID int64, accessRev int64, commandID, eventType string, success bool, errText string) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO vpn_node_sync_results (
+			node_id, server_key, telegram_id, access_rev,
+			command_id, event_type, success, error
+		)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+	`, nodeID, serverKey, telegramID, accessRev, commandID, eventType, success, errText)
+	if err != nil {
+		return fmt.Errorf("save node sync result: %w", err)
+	}
+	return nil
+}
+
+func scanAccessState(row pgx.Row) (*AccessState, error) {
+	var state AccessState
+	var accessUntil sql.NullTime
+	var graceUntil sql.NullTime
+	var country sql.NullString
+
+	if err := row.Scan(&state.TelegramID, &state.Status, &accessUntil, &graceUntil, &state.AccessRev, &country); err != nil {
+		return nil, err
+	}
+	if accessUntil.Valid {
+		t := accessUntil.Time.UTC()
+		state.AccessUntil = &t
+	}
+	if graceUntil.Valid {
+		t := graceUntil.Time.UTC()
+		state.GraceUntil = &t
+	}
+	if country.Valid {
+		state.CountryCode = country.String
+	}
+	return &state, nil
+}
+
+func scanCredential(row pgx.Row) (*UserCredential, error) {
+	var cred UserCredential
+	if err := row.Scan(
+		&cred.TelegramID,
+		&cred.ItemKey,
+		&cred.ServerKey,
+		&cred.NodeID,
+		&cred.InboundTag,
+		&cred.Email,
+		&cred.VLESSUUID,
+		&cred.AccessRev,
+		&cred.Enabled,
+	); err != nil {
+		return nil, err
+	}
+	return &cred, nil
+}
+
+func buildEmail(telegramID int64, itemKey string) string {
+	clean := strings.NewReplacer("@", "-", "/", "-", " ", "-", ":", "-").Replace(itemKey)
+	return "tg-" + strconv.FormatInt(telegramID, 10) + "-" + clean + "@vpn-platform.local"
+}
+
+func (r *Repository) MarkCredentialsSynced(ctx context.Context, telegramID int64, accessRev int64, nodeID string) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE vpn_user_node_credentials
+		SET last_synced_rev = GREATEST(last_synced_rev, $2),
+		    last_synced_at = now(),
+		    updated_at = now()
+		WHERE telegram_id = $1
+		  AND access_rev <= $2
+		  AND node_id = $3
+	`, telegramID, accessRev, nodeID)
+	if err != nil {
+		return fmt.Errorf("mark credentials synced: %w", err)
+	}
+	return nil
+}
+
+func BuildVLESSURL(item PoolItem, cred UserCredential) string {
+	host := item.PublicHost
+	port := item.Port
+	if port <= 0 {
+		port = 443
+	}
+
+	params := make([]string, 0, 8)
+	params = append(params, "encryption=none")
+	if item.Security != "" {
+		params = append(params, "security="+url.QueryEscape(item.Security))
+	}
+	if item.Transport != "" {
+		params = append(params, "type="+url.QueryEscape(item.Transport))
+	}
+	if item.HostHeader != "" {
+		params = append(params, "host="+url.QueryEscape(item.HostHeader))
+	}
+	if item.WSPath != "" {
+		params = append(params, "path="+url.QueryEscape(item.WSPath))
+	}
+	if item.SNI != "" {
+		params = append(params, "sni="+url.QueryEscape(item.SNI))
+	}
+	if item.Flow != "" {
+		params = append(params, "flow="+url.QueryEscape(item.Flow))
+	}
+
+	remark := url.QueryEscape(item.Title)
+	return fmt.Sprintf("vless://%s@%s:%d?%s#%s", cred.VLESSUUID, host, port, strings.Join(params, "&"), remark)
+}
+
+type AdminNodeRequest struct {
+	ServerKey         string `json:"server_key"`
+	NodeID            string `json:"node_id"`
+	CountryCode       string `json:"country_code"`
+	Title             string `json:"title"`
+	PublicHost        string `json:"public_host"`
+	Port              int    `json:"port"`
+	Transport         string `json:"transport"`
+	Security          string `json:"security"`
+	DefaultInboundTag string `json:"default_inbound_tag"`
+	HostHeader        string `json:"host_header"`
+	SNI               string `json:"sni"`
+	WSPath            string `json:"ws_path"`
+	Flow              string `json:"flow"`
+	Enabled           bool   `json:"enabled"`
+}
+
+type AdminPoolItemRequest struct {
+	ItemKey     string `json:"item_key"`
+	ServerKey   string `json:"server_key"`
+	CountryCode string `json:"country_code"`
+	Title       string `json:"title"`
+	ProfileType string `json:"profile_type"`
+	Enabled     bool   `json:"enabled"`
+	SortOrder   int    `json:"sort_order"`
+	InboundTag  string `json:"inbound_tag"`
+	HostHeader  string `json:"host_header"`
+	SNI         string `json:"sni"`
+	WSPath      string `json:"ws_path"`
+	Flow        string `json:"flow"`
+	Level       int    `json:"level"`
+}
+
+func (r *Repository) UpsertAdminNode(ctx context.Context, req AdminNodeRequest) error {
+	if req.ServerKey == "" || req.NodeID == "" || req.PublicHost == "" {
+		return fmt.Errorf("server_key, node_id and public_host are required")
+	}
+	if req.Port <= 0 {
+		req.Port = 443
+	}
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO vpn_servers (
+			server_key, node_id, country_code, title, public_host, port, transport, security,
+			default_inbound_tag, host_header, sni, ws_path, flow, enabled
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+		ON CONFLICT (server_key) DO UPDATE SET
+			node_id=EXCLUDED.node_id,
+			country_code=EXCLUDED.country_code,
+			title=EXCLUDED.title,
+			public_host=EXCLUDED.public_host,
+			port=EXCLUDED.port,
+			transport=EXCLUDED.transport,
+			security=EXCLUDED.security,
+			default_inbound_tag=EXCLUDED.default_inbound_tag,
+			host_header=EXCLUDED.host_header,
+			sni=EXCLUDED.sni,
+			ws_path=EXCLUDED.ws_path,
+			flow=EXCLUDED.flow,
+			enabled=EXCLUDED.enabled,
+			updated_at=now()
+	`, req.ServerKey, req.NodeID, req.CountryCode, req.Title, req.PublicHost, req.Port, req.Transport, req.Security, req.DefaultInboundTag, req.HostHeader, req.SNI, req.WSPath, req.Flow, req.Enabled)
+	return err
+}
+
+func (r *Repository) SetAdminNodeEnabled(ctx context.Context, nodeID string, enabled bool) error {
+	_, err := r.pool.Exec(ctx, `UPDATE vpn_servers SET enabled=$2, updated_at=now() WHERE node_id=$1`, nodeID, enabled)
+	return err
+}
+
+func (r *Repository) UpsertAdminPoolItem(ctx context.Context, req AdminPoolItemRequest) error {
+	if req.ItemKey == "" || req.ServerKey == "" {
+		return fmt.Errorf("item_key and server_key are required")
+	}
+	if req.ProfileType == "" {
+		req.ProfileType = "vless"
+	}
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO vpn_pool_items (
+			item_key, server_key, country_code, title, profile_type, enabled, sort_order,
+			inbound_tag, host_header, sni, ws_path, flow, level
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		ON CONFLICT (item_key) DO UPDATE SET
+			server_key=EXCLUDED.server_key,
+			country_code=EXCLUDED.country_code,
+			title=EXCLUDED.title,
+			profile_type=EXCLUDED.profile_type,
+			enabled=EXCLUDED.enabled,
+			sort_order=EXCLUDED.sort_order,
+			inbound_tag=EXCLUDED.inbound_tag,
+			host_header=EXCLUDED.host_header,
+			sni=EXCLUDED.sni,
+			ws_path=EXCLUDED.ws_path,
+			flow=EXCLUDED.flow,
+			level=EXCLUDED.level,
+			updated_at=now()
+	`, req.ItemKey, req.ServerKey, req.CountryCode, req.Title, req.ProfileType, req.Enabled, req.SortOrder, req.InboundTag, req.HostHeader, req.SNI, req.WSPath, req.Flow, req.Level)
+	return err
+}
+
+func (r *Repository) GetAccessByTelegramID(ctx context.Context, telegramID int64) (*AccessState, error) {
+	row := r.pool.QueryRow(ctx, `
+		SELECT telegram_id, status, access_until, grace_until, access_rev, country_code
+		FROM vpn_user_access
+		WHERE telegram_id=$1
+	`, telegramID)
+	state, err := scanAccessState(row)
+	if err != nil {
+		return nil, fmt.Errorf("get access by telegram_id: %w", err)
+	}
+	return state, nil
+}
+
+func parseInt64(raw string) (int64, error) {
+	return strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+}

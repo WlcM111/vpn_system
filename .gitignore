@@ -1,0 +1,28 @@
+# secrets
+.env
+.env.local
+.env.*.local
+
+# IDE / OS
+.git
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+
+# CI / coverage
+coverage.out
+*.out
+
+# build artifacts
+bin/
+dist/
+tmp/
+*.exe
+*.test
+*.prof
+
+# tooling temp
+*.log
+*.tmp
+*.swp

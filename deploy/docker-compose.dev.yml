@@ -1,0 +1,289 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: vpn-platform-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vpn -d vpn_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: vpn-platform-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  kafka:
+    image: bitnami/kafka:3.7
+    container_name: vpn-platform-kafka
+    environment:
+      KAFKA_CFG_NODE_ID: 1
+      KAFKA_CFG_PROCESS_ROLES: broker,controller
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:19092
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://${PUBLIC_DOMAIN:?PUBLIC_DOMAIN is required}:19092
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "false"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+    ports:
+      - "127.0.0.1:9092:9092"
+      - "19092:19092"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server kafka:9092 --list || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - kafka_data:/bitnami/kafka
+
+  kafka-init:
+    image: bitnami/kafka:3.7
+    container_name: vpn-platform-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: >
+      sh -c '
+      for t in
+        subscription.commands subscription.events
+        billing.commands billing.events
+        tg.notifications
+        vpn.commands vpn.events
+        crypto.commands
+        subscription.commands.dlt subscription.events.dlt
+        billing.commands.dlt billing.events.dlt
+        tg.notifications.dlt
+        vpn.commands.dlt vpn.events.dlt
+        crypto.commands.dlt
+      ; do
+        kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic $$t --partitions 6 --replication-factor 1;
+      done
+      '
+    restart: "no"
+
+  migrate:
+    image: postgres:16-alpine
+    container_name: vpn-platform-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      PGUSER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      PGDATABASE: ${POSTGRES_DB:?POSTGRES_DB is required}
+    volumes:
+      - ../migrations:/migrations:ro
+    command: >
+      sh -c '
+      for sd in platform billing-service tg-bot-gateway user-subscription-service vpn-orchestrator-service crypto-billing-service; do
+        if [ ! -d "/migrations/$$sd" ]; then continue; fi;
+        for f in $$(find /migrations/$$sd -maxdepth 1 -type f -name "*.sql" | sort); do
+          echo "applying $$f";
+          psql -h postgres -U "$$PGUSER" -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -f "$$f";
+        done;
+      done
+      '
+    restart: "no"
+
+  billing-service:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.billing-service
+    container_name: vpn-platform-billing-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      KAFKA_BROKERS: kafka:9092
+      REDIS_ADDR: redis:6379
+      BILLING_HTTP_ADDR: :8082
+      METRICS_ADDR: :9090
+      YOOKASSA_SHOP_ID: ${YOOKASSA_SHOP_ID:-}
+      YOOKASSA_SECRET_KEY: ${YOOKASSA_SECRET_KEY:-}
+      YOOKASSA_RETURN_URL: ${YOOKASSA_RETURN_URL:-http://localhost:8082/checkout/success}
+      YOOKASSA_WEBHOOK_TOKEN: ${YOOKASSA_WEBHOOK_TOKEN:-dev-webhook-token}
+      YOOKASSA_ENFORCE_IP_CHECK: ${YOOKASSA_ENFORCE_IP_CHECK:-false}
+      PLAN_MONTHLY_PRICE_RUB: ${PLAN_MONTHLY_PRICE_RUB:-299.00}
+      PLAN_QUARTERLY_PRICE_RUB: ${PLAN_QUARTERLY_PRICE_RUB:-799.00}
+      BILLING_RENEWAL_TICK: ${BILLING_RENEWAL_TICK:-1m}
+      BILLING_GRACE_PERIOD: ${BILLING_GRACE_PERIOD:-72h}
+      BILLING_RETRY_SCHEDULE: ${BILLING_RETRY_SCHEDULE:-15m,6h,24h}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8082/readyz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "127.0.0.1:8082:8082"
+      - "127.0.0.1:19082:9090"
+
+  user-subscription-service:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.user-subscription-service
+    container_name: vpn-platform-user-subscription-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      KAFKA_BROKERS: kafka:9092
+      REDIS_ADDR: redis:6379
+      USER_SUBSCRIPTION_HTTP_ADDR: :8083
+      METRICS_ADDR: :9090
+      SUBSCRIPTION_PUBLIC_BASE_URL: ${SUBSCRIPTION_PUBLIC_BASE_URL:-http://localhost:8084/sub/}
+      SUBSCRIPTION_DEFAULT_COUNTRY: ${SUBSCRIPTION_DEFAULT_COUNTRY:-LT}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8083/readyz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "127.0.0.1:8083:8083"
+      - "127.0.0.1:19083:9090"
+
+  vpn-orchestrator-service:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.vpn-orchestrator-service
+    container_name: vpn-platform-vpn-orchestrator-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      KAFKA_BROKERS: kafka:9092
+      REDIS_ADDR: redis:6379
+      VPN_ORCHESTRATOR_HTTP_ADDR: :8084
+      METRICS_ADDR: :9090
+      SUBSCRIPTION_FEED_FORMAT: ${SUBSCRIPTION_FEED_FORMAT:-base64}
+      SUBSCRIPTION_RATE_LIMIT_PER_MINUTE: ${SUBSCRIPTION_RATE_LIMIT_PER_MINUTE:-30}
+      ORCHESTRATOR_ADMIN_USER: ${ORCHESTRATOR_ADMIN_USER:-admin}
+      ORCHESTRATOR_ADMIN_PASS: ${ORCHESTRATOR_ADMIN_PASS:-}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8084/readyz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "127.0.0.1:8084:8084"
+      - "127.0.0.1:19084:9090"
+  crypto-billing-service:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.crypto-billing-service
+    container_name: vpn-platform-crypto-billing-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      KAFKA_BROKERS: kafka:9092
+      CRYPTO_BILLING_HTTP_ADDR: :8086
+      METRICS_ADDR: :9090
+      CRYPTOBOT_API_BASE: ${CRYPTOBOT_API_BASE:-https://pay.crypt.bot/api}
+      CRYPTOBOT_API_TOKEN: ${CRYPTOBOT_API_TOKEN:-}
+      CRYPTOBOT_WEBHOOK_TOKEN: ${CRYPTOBOT_WEBHOOK_TOKEN:-dev-cryptobot-webhook-token}
+      CRYPTOBOT_DEFAULT_ASSET: ${CRYPTOBOT_DEFAULT_ASSET:-USDT}
+      CRYPTOBOT_INVOICE_EXPIRES_IN: ${CRYPTOBOT_INVOICE_EXPIRES_IN:-1800}
+      CRYPTOBOT_PAID_BTN_NAME: ${CRYPTOBOT_PAID_BTN_NAME:-callback}
+      CRYPTOBOT_PAID_BTN_URL: ${CRYPTOBOT_PAID_BTN_URL:-}
+      CRYPTO_PLAN_MONTHLY_USDT: ${CRYPTO_PLAN_MONTHLY_USDT:-5.00}
+      CRYPTO_PLAN_QUARTERLY_USDT: ${CRYPTO_PLAN_QUARTERLY_USDT:-13.00}
+      CRYPTO_PLAN_MONTHLY_TON: ${CRYPTO_PLAN_MONTHLY_TON:-1.5}
+      CRYPTO_PLAN_QUARTERLY_TON: ${CRYPTO_PLAN_QUARTERLY_TON:-4.0}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8086/readyz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "127.0.0.1:8086:8086"
+      - "127.0.0.1:19086:9090"
+      
+  tg-bot-gateway:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.tg-bot-gateway
+    container_name: vpn-platform-tg-bot-gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      billing-service:
+        condition: service_started
+      user-subscription-service:
+        condition: service_started
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TG_ALLOW_MOCK_BACKEND: ${TG_ALLOW_MOCK_BACKEND:-false}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      KAFKA_BROKERS: kafka:9092
+      REDIS_ADDR: redis:6379
+      TG_SUBSCRIPTION_PUBLIC_BASE_URL: ${SUBSCRIPTION_PUBLIC_BASE_URL:-http://localhost:8084/sub/}
+      TG_WEBHOOK_URL: ${TG_WEBHOOK_URL:-}
+      TG_WEBHOOK_SECRET: ${TG_WEBHOOK_SECRET:-}
+      METRICS_ADDR: :9090
+    ports:
+      - "127.0.0.1:8085:8085"
+      - "127.0.0.1:19085:9090"
+  
+volumes:
+  postgres_data:
+  redis_data:
+  kafka_data:

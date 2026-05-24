@@ -1,0 +1,32 @@
+# Builder: компилируем статический бинарь на Alpine с актуальной Go.
+# CGO_ENABLED=0 нужен для бинаря, который запустится в чистом alpine без glibc.
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /app
+
+# ca-certificates нужны для HTTPS-запросов к CryptoBot API,
+# tzdata — для корректных таймстампов в логах.
+RUN apk add --no-cache ca-certificates tzdata
+
+# Сначала только go.mod/go.sum, чтобы Docker кэшировал слой с зависимостями.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags="-s -w" \
+    -o /out/crypto-billing-service ./cmd/crypto-billing-service
+
+# Runtime: минимальный alpine с non-root user.
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates tzdata \
+    && adduser -D -H -u 10001 appuser
+
+WORKDIR /app
+COPY --from=builder /out/crypto-billing-service ./crypto-billing-service
+
+USER appuser
+EXPOSE 8086
+
+ENTRYPOINT ["./crypto-billing-service"]
