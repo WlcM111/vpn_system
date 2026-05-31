@@ -205,102 +205,6 @@ func (r *Repository) scanPayment(row pgx.Row, op string) (*PaymentRecord, error)
 	return &p, nil
 }
 
-func (r *Repository) SaveCustomerBinding(
-	ctx context.Context,
-	telegramID int64,
-	paymentMethodID string,
-	methodType string,
-	last4 string,
-	expiryMonth string,
-	expiryYear string,
-) error {
-	_, err := r.pool.Exec(ctx, `
-		INSERT INTO billing_customers (
-			telegram_id, payment_method_id, method_type, card_last4, card_expiry_month, card_expiry_year, bound_at
-		)
-		VALUES ($1,$2,$3,$4,$5,$6,now())
-		ON CONFLICT (telegram_id) DO UPDATE SET
-			payment_method_id = EXCLUDED.payment_method_id,
-			method_type = EXCLUDED.method_type,
-			card_last4 = EXCLUDED.card_last4,
-			card_expiry_month = EXCLUDED.card_expiry_month,
-			card_expiry_year = EXCLUDED.card_expiry_year,
-			bound_at = now(),
-			updated_at = now()
-	`, telegramID, paymentMethodID, methodType, last4, expiryMonth, expiryYear)
-	if err != nil {
-		return fmt.Errorf("save customer binding: %w", err)
-	}
-	return nil
-}
-
-func (r *Repository) ClearCustomerBinding(ctx context.Context, telegramID int64) error {
-	_, err := r.pool.Exec(ctx, `
-		DELETE FROM billing_customers
-		WHERE telegram_id = $1
-	`, telegramID)
-	if err != nil {
-		return fmt.Errorf("clear customer binding: %w", err)
-	}
-	return nil
-}
-
-func (r *Repository) UpsertRecurringProfile(ctx context.Context, p *RecurringProfile) error {
-	_, err := r.pool.Exec(ctx, `
-		INSERT INTO billing_recurring_profiles (
-			telegram_id, plan_code, duration_days, amount_value, currency,
-			payment_method_id, auto_renew_enabled, status, next_charge_at,
-			retry_count, grace_until, last_payment_id, last_failure_reason
-		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0,NULL,$10,'')
-		ON CONFLICT (telegram_id) DO UPDATE SET
-			plan_code = EXCLUDED.plan_code,
-			duration_days = EXCLUDED.duration_days,
-			amount_value = EXCLUDED.amount_value,
-			currency = EXCLUDED.currency,
-			payment_method_id = EXCLUDED.payment_method_id,
-			auto_renew_enabled = EXCLUDED.auto_renew_enabled,
-			status = EXCLUDED.status,
-			next_charge_at = EXCLUDED.next_charge_at,
-			retry_count = 0,
-			grace_until = NULL,
-			last_payment_id = EXCLUDED.last_payment_id,
-			last_failure_reason = '',
-			updated_at = now()
-	`,
-		p.TelegramID,
-		string(p.PlanCode),
-		p.DurationDays,
-		p.AmountValue,
-		p.Currency,
-		p.PaymentMethodID,
-		p.AutoRenewEnabled,
-		p.Status,
-		p.NextChargeAt,
-		p.LastPaymentID,
-	)
-	if err != nil {
-		return fmt.Errorf("upsert recurring profile: %w", err)
-	}
-	return nil
-}
-
-func (r *Repository) DisableAutoRenew(ctx context.Context, telegramID int64, reason string) error {
-	_, err := r.pool.Exec(ctx, `
-		UPDATE billing_recurring_profiles
-		SET auto_renew_enabled = false,
-			locked_at = NULL,
-			status = 'disabled',
-			last_failure_reason = $2,
-			updated_at = now()
-		WHERE telegram_id = $1
-	`, telegramID, reason)
-	if err != nil {
-		return fmt.Errorf("disable auto-renew: %w", err)
-	}
-	return nil
-}
-
 func (r *Repository) UpdateNextChargeAt(ctx context.Context, telegramID int64, activeUntil time.Time) error {
 	_, err := r.pool.Exec(ctx, `
 		UPDATE billing_recurring_profiles
@@ -360,61 +264,6 @@ func (r *Repository) LockDueRenewals(ctx context.Context, now time.Time, limit i
 	return profiles, nil
 }
 
-func (r *Repository) ScheduleRenewalRetry(ctx context.Context, telegramID int64, nextRetryAt time.Time, retryCount int, reason string, paymentID string) error {
-	_, err := r.pool.Exec(ctx, `
-		UPDATE billing_recurring_profiles
-		SET status = 'retry',
-			locked_at = NULL,
-			next_charge_at = $2,
-			retry_count = $3,
-			last_failure_reason = $4,
-			last_payment_id = COALESCE(NULLIF($5, ''), last_payment_id),
-			updated_at = now()
-		WHERE telegram_id = $1
-	`, telegramID, nextRetryAt.UTC(), retryCount, reason, paymentID)
-	if err != nil {
-		return fmt.Errorf("schedule renewal retry: %w", err)
-	}
-	return nil
-}
-
-func (r *Repository) StartGracePeriod(ctx context.Context, telegramID int64, graceUntil time.Time, reason string, paymentID string) error {
-	_, err := r.pool.Exec(ctx, `
-		UPDATE billing_recurring_profiles
-		SET status = 'grace',
-			locked_at = NULL,
-			grace_until = $2,
-			next_charge_at = NULL,
-			last_failure_reason = $3,
-			last_payment_id = COALESCE(NULLIF($4, ''), last_payment_id),
-			updated_at = now()
-		WHERE telegram_id = $1
-	`, telegramID, graceUntil.UTC(), reason, paymentID)
-	if err != nil {
-		return fmt.Errorf("start grace period: %w", err)
-	}
-	return nil
-}
-
-func (r *Repository) MarkRecurringSuccess(ctx context.Context, telegramID int64, paymentID string, fallbackNextChargeAt time.Time) error {
-	_, err := r.pool.Exec(ctx, `
-		UPDATE billing_recurring_profiles
-		SET status = 'active',
-			locked_at = NULL,
-			retry_count = 0,
-			grace_until = NULL,
-			last_payment_id = $2,
-			last_failure_reason = '',
-			next_charge_at = $3,
-			updated_at = now()
-		WHERE telegram_id = $1
-	`, telegramID, paymentID, fallbackNextChargeAt.UTC())
-	if err != nil {
-		return fmt.Errorf("mark recurring success: %w", err)
-	}
-	return nil
-}
-
 func (r *Repository) LockExpiredGraceProfiles(ctx context.Context, now time.Time, limit int) ([]RecurringProfile, error) {
 	rows, err := r.pool.Query(ctx, `
 		WITH picked AS (
@@ -455,23 +304,6 @@ func (r *Repository) LockExpiredGraceProfiles(ctx context.Context, now time.Time
 	}
 
 	return profiles, nil
-}
-
-func (r *Repository) SuspendExpiredGrace(ctx context.Context, telegramID int64, reason string) error {
-	_, err := r.pool.Exec(ctx, `
-		UPDATE billing_recurring_profiles
-		SET auto_renew_enabled = false,
-			locked_at = NULL,
-			status = 'expired',
-			next_charge_at = NULL,
-			last_failure_reason = $2,
-			updated_at = now()
-		WHERE telegram_id = $1
-	`, telegramID, reason)
-	if err != nil {
-		return fmt.Errorf("suspend expired grace: %w", err)
-	}
-	return nil
 }
 
 func scanRecurringProfiles(rows pgx.Rows) ([]RecurringProfile, error) {
@@ -541,23 +373,6 @@ func (r *Repository) RecordWebhookFingerprint(ctx context.Context, paymentID, ev
 		return false, fmt.Errorf("record webhook fingerprint: %w", err)
 	}
 	return ct.RowsAffected() == 1, nil
-}
-
-func (r *Repository) AddPendingRefund(ctx context.Context, paymentID, amountValue, currency, errText string) error {
-	_, err := r.pool.Exec(ctx, `
-		INSERT INTO billing_pending_refunds (payment_id, amount_value, currency, last_error)
-		VALUES ($1,$2,$3,$4)
-		ON CONFLICT (payment_id) DO UPDATE SET
-			amount_value = EXCLUDED.amount_value,
-			currency = EXCLUDED.currency,
-			last_error = EXCLUDED.last_error,
-			next_attempt_at = LEAST(billing_pending_refunds.next_attempt_at, now()),
-			updated_at = now()
-	`, paymentID, amountValue, currency, errText)
-	if err != nil {
-		return fmt.Errorf("add pending refund: %w", err)
-	}
-	return nil
 }
 
 func (r *Repository) LockDueRefunds(ctx context.Context, now time.Time, limit int) ([]PendingRefund, error) {

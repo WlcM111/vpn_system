@@ -432,7 +432,52 @@ func (s *Service) handlePaymentSucceeded(
 	}
 }
 
+// assertYooKassaPaymentPaid запрашивает платёж у YooKassa и проверяет, что он реально
+// оплачен. Возвращает ошибку, если статус не succeeded/paid — тогда обработка вебхука
+// прерывается, и поддельная активация невозможна.
+func (s *Service) assertYooKassaPaymentPaid(ctx context.Context, paymentID string) error {
+	if strings.TrimSpace(paymentID) == "" {
+		return fmt.Errorf("empty payment id for verification")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.cfg.YooKassaAPIBase+"/payments/"+paymentID, nil)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(s.cfg.ShopID, s.cfg.SecretKey)
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("verify yookassa payment http: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("verify yookassa payment status http=%d body=%s", resp.StatusCode, string(raw))
+	}
+
+	var parsed yooKassaPaymentResponse
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return fmt.Errorf("decode verify payment: %w", err)
+	}
+	if parsed.Status != "succeeded" && !parsed.Paid {
+		return fmt.Errorf("payment %s not actually paid: status=%s paid=%v", paymentID, parsed.Status, parsed.Paid)
+	}
+	return nil
+}
+
 func (s *Service) handleSubscriptionPaymentSucceeded(ctx context.Context, record *PaymentRecord, n *yooKassaWebhookNotification) error {
+	// Authoritative-проверка: перепрашиваем статус платежа напрямую у YooKassa по нашему
+	// secret key. Это защита от поддельного вебхука при утечке webhook-токена — YooKassa
+	// тело вебхука не подписывает, поэтому доверять полю status из вебхука нельзя.
+	if err := s.assertYooKassaPaymentPaid(ctx, record.PaymentID); err != nil {
+		return err
+	}
+
 	paidAt := time.Now().UTC()
 	chargeSource := billingChargeSourceFromMetadata(record.Metadata)
 	attemptNo := intFromMetadata(record.Metadata, "attempt_no")

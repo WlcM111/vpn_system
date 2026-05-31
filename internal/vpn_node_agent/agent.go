@@ -106,6 +106,23 @@ func (a *Agent) markCommandSeen(commandID string) (bool, error) {
 	return true, a.repo.Save(a.state)
 }
 
+// isCommandSeen возвращает true, если commandID уже зарегистрирован как успешно
+// обработанный. В отличие от markCommandSeen, эта функция НЕ модифицирует state —
+// просто читает. Используется консьюмером, чтобы дешёво отсеять дубликаты до
+// фактической обработки, не блокируя retry при временных сбоях.
+func (a *Agent) isCommandSeen(commandID string) bool {
+	if commandID == "" {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.state.SeenCommands == nil {
+		return false
+	}
+	_, ok := a.state.SeenCommands[commandID]
+	return ok
+}
+
 func (a *Agent) cleanupSeenCommands() {
 	a.mu.Lock()
 	defer a.mu.Unlock()

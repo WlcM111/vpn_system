@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"time"
 
 	kafkacontracts "vpn-platform/internal/contracts/kafka"
@@ -194,18 +193,4 @@ func PickPayURL(inv *CryptoBotInvoice) string {
 		return inv.WebAppPay
 	}
 	return inv.PayURL
-}
-
-// InvoiceIDToString конвертирует invoice_id из webhook'а (он приходит как число JSON,
-// в Go-парсере становится float64) в строку, которую мы храним в БД.
-func InvoiceIDToString(id any) string {
-	switch v := id.(type) {
-	case int64:
-		return strconv.FormatInt(v, 10)
-	case float64:
-		return strconv.FormatInt(int64(v), 10)
-	case string:
-		return v
-	}
-	return fmt.Sprint(id)
 }

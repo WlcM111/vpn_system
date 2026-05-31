@@ -1,7 +1,6 @@
 package user_subscription
 
 import (
-	"errors"
 	"time"
 )
 
@@ -16,10 +15,6 @@ const (
 )
 
 const TrialPlanCode = "trial_3d"
-
-var (
-	ErrNoActiveSubscription = errors.New("no active subscription")
-)
 
 type SubscriptionState struct {
 	TelegramID        int64

@@ -3,7 +3,6 @@ package kafka
 type TgKeyboard string
 
 const (
-	TgKeyboardNone                 TgKeyboard = ""
 	TgKeyboardMainMenu             TgKeyboard = "main_menu"
 	TgKeyboardBuyMenu              TgKeyboard = "buy_menu"
 	TgKeyboardTrialOrBuy           TgKeyboard = "trial_or_buy"

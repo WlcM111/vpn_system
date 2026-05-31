@@ -104,6 +104,12 @@ func main() {
 	// Если producer == nil (Kafka выключен) — worker корректно делает no-op.
 	go outbox.RunPublisher(ctx, pool, producer, "crypto-billing-service")
 
+	// Запуск recovery-воркера, который чистит застрявшие в статусе 'creating' инвойсы.
+	// Покрывает крайний случай: процесс упал между CryptoBot.CreateInvoice и
+	// MarkInvoiceActiveTx, в БД остался инвойс с пустым invoice_id и pay_url.
+	// Воркер помечает такие записи failed и шлёт пользователю TG-уведомление.
+	go crypto_billing.RunStuckInvoicesWorker(ctx, svc)
+
 	// Запуск HTTP-сервера.
 	go func() {
 		slog.Info("crypto-billing http server started", "addr", cfg.HTTPAddr)

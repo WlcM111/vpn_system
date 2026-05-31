@@ -38,12 +38,23 @@ func RunPublisher(ctx context.Context, pool *pgxpool.Pool, producer *commonkafka
 		}
 		idleSleep = 200 * time.Millisecond
 
+		// blockedKeys: если событие с данным message_key упало, мы НЕ публикуем
+		// последующие события с тем же ключом в этом проходе — иначе нарушится
+		// порядок событий одного пользователя (events keyed by telegram_id).
+		// Они подхватятся в следующем цикле, после успешного ретрая упавшего.
+		blockedKeys := make(map[string]struct{}, 8)
 		for _, e := range events {
+			if _, blocked := blockedKeys[e.MessageKey]; blocked {
+				// откатываем статус с 'processing' обратно в 'pending', чтобы взять в следующий раз
+				_ = MarkRetry(ctx, pool, e.ID, "blocked by earlier failed event with same key")
+				continue
+			}
 			if err := producer.PublishJSON(ctx, e.Topic, e.MessageKey, jsonRaw(e.Payload)); err != nil {
 				_ = MarkRetry(ctx, pool, e.ID, err.Error())
 				if e.Attempts >= 20 {
 					_ = SaveFailedMessage(ctx, pool, serviceName, e.Topic, e.MessageKey, "outbox", e.Payload, err.Error())
 				}
+				blockedKeys[e.MessageKey] = struct{}{}
 				continue
 			}
 			_ = MarkPublished(ctx, pool, e.ID)

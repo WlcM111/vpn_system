@@ -94,14 +94,6 @@ func (s *Service) RenderSubscriptionFeedDetailed(ctx context.Context, token stri
 	}
 }
 
-func (s *Service) RenderSubscriptionFeed(ctx context.Context, token string) ([]byte, string, error) {
-	res, err := s.RenderSubscriptionFeedDetailed(ctx, token)
-	if err != nil {
-		return nil, "text/plain; charset=utf-8", err
-	}
-	return res.Body, res.ContentType, nil
-}
-
 func accessAllowed(state *AccessState, now time.Time) bool {
 	if state == nil {
 		return false

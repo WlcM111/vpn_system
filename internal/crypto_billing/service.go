@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -262,14 +263,32 @@ func (s *Service) ProcessWebhook(ctx context.Context, raw []byte, fingerprint st
 		return ErrDuplicateWebhook
 	}
 
-	// Шаг 2: найти инвойс. FOR UPDATE блокирует строку.
-	// Если инвойса нет — вернём ErrInvoiceNotFound, HTTP-хендлер вернёт 4xx, CryptoBot
-	// повторит позже. Это нормальное поведение при гонке (теоретически возможно, если
-	// CryptoBot ретраит вебхук быстрее, чем мы успели закоммитить транзакцию №2 в HandleCreateCheckout).
 	inv, err := s.repo.GetInvoiceByInvoiceIDTx(ctx, tx, invoiceIDStr)
 	if err != nil {
 		return fmt.Errorf("%w: invoice_id=%s err=%v", ErrInvoiceNotFound, invoiceIDStr, err)
 	}
+
+	// Валидация содержимого подписанного payload: статус должен быть paid, актив и сумма
+	// должны совпадать с тем, что мы создавали. HMAC защищает от подделки источника,
+	// эта проверка — от логических расхождений. Если не совпало — фиксируем вебхук как
+	// обработанный (fingerprint уже записан), но НЕ активируем подписку.
+	if ip.Status != "" && ip.Status != "paid" {
+		slog.Warn("crypto-billing webhook with non-paid status, skipping activation",
+			"invoice_id", invoiceIDStr, "order_id", inv.OrderID, "status", ip.Status)
+		return tx.Commit(ctx)
+	}
+	if ip.Asset != "" && !strings.EqualFold(ip.Asset, inv.Asset) {
+		slog.Error("crypto-billing webhook asset mismatch",
+			"invoice_id", invoiceIDStr, "expected", inv.Asset, "got", ip.Asset)
+		return tx.Commit(ctx)
+	}
+	if ip.Amount != "" && !amountsEqual(ip.Amount, inv.AmountValue) {
+		slog.Error("crypto-billing webhook amount mismatch",
+			"invoice_id", invoiceIDStr, "expected", inv.AmountValue, "got", ip.Amount)
+		return tx.Commit(ctx)
+	}
+
+	// Шаг 3: пометить как paid. Если уже был paid — UPDATE не сработает (RowsAffected=0).
 
 	// Шаг 3: пометить как paid. Если уже был paid — UPDATE не сработает (RowsAffected=0).
 	updated, err := s.repo.MarkInvoicePaidTx(ctx, tx, inv.OrderID, raw)
@@ -328,6 +347,52 @@ func (s *Service) ProcessWebhook(ctx context.Context, raw []byte, fingerprint st
 	return tx.Commit(ctx)
 }
 
+// ProcessStuckCreatingInvoices — один проход recovery-воркера.
+// Находит инвойсы, висящие в статусе 'creating' дольше threshold, помечает их
+// failed и шлёт пользователю TG-уведомление через outbox. CryptoBot-инвойс на их
+// стороне истекает сам через CRYPTOBOT_INVOICE_EXPIRES_IN, ничего отзывать не надо.
+//
+// Все операции одной транзакции — UPDATE статусов и AddTx outbox-уведомлений —
+// чтобы либо всё применилось, либо ничего. SKIP LOCKED в Lock... защищает от
+// параллельных воркеров (на случай будущего горизонтального масштабирования).
+func (s *Service) ProcessStuckCreatingInvoices(ctx context.Context, threshold time.Duration, limit int) error {
+	cutoff := time.Now().UTC().Add(-threshold)
+
+	tx, err := s.repo.BeginTx(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	stuck, err := s.repo.LockStuckCreatingInvoicesTx(ctx, tx, cutoff, limit)
+	if err != nil {
+		return err
+	}
+	if len(stuck) == 0 {
+		return tx.Commit(ctx)
+	}
+
+	for _, inv := range stuck {
+		reason := fmt.Sprintf("stuck in creating since %s (recovered by worker)", inv.CreatedAt.UTC().Format(time.RFC3339))
+		if err := s.repo.MarkInvoiceFailedTx(ctx, tx, inv.OrderID, reason); err != nil {
+			return err
+		}
+		if err := s.notifyTx(ctx, tx, kafkacontracts.TgNotification{
+			TelegramID: inv.TelegramID,
+			Message: "⚠️ Не удалось создать счёт на оплату криптой (внутренний сбой). " +
+				"Попробуй ещё раз через меню «Купить подписку» — или выбери оплату картой.",
+			Keyboard: kafkacontracts.TgKeyboardBuyMenu,
+		}); err != nil {
+			return err
+		}
+		slog.Warn("crypto-billing stuck invoice marked failed",
+			"order_id", inv.OrderID,
+			"telegram_id", inv.TelegramID,
+			"created_at", inv.CreatedAt)
+	}
+	return tx.Commit(ctx)
+}
+
 // ============================================================================
 // Outbox helpers — обёртки, чтобы handler-функции выглядели читаемо
 // ============================================================================
@@ -362,4 +427,20 @@ func (s *Service) publishBillingEventTx(ctx context.Context, tx pgx.Tx, event *k
 		EventType:     string(event.Type),
 		Payload:       event,
 	})
+}
+
+// amountsEqual сравнивает две суммы-строки численно с небольшой толерантностью.
+// Нужна, потому что CryptoBot может вернуть "5" там, где мы отправили "5.00".
+func amountsEqual(a, b string) bool {
+	fa, errA := strconv.ParseFloat(strings.TrimSpace(a), 64)
+	fb, errB := strconv.ParseFloat(strings.TrimSpace(b), 64)
+	if errA != nil || errB != nil {
+		// если не парсится — падаем на строковое сравнение
+		return strings.TrimSpace(a) == strings.TrimSpace(b)
+	}
+	diff := fa - fb
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff < 0.000001
 }

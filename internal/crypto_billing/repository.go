@@ -21,8 +21,6 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 	return &Repository{pool: pool}
 }
 
-func (r *Repository) Pool() *pgxpool.Pool { return r.pool }
-
 func (r *Repository) BeginTx(ctx context.Context) (pgx.Tx, error) {
 	return r.pool.Begin(ctx)
 }
@@ -180,4 +178,48 @@ func (r *Repository) RecordWebhookFingerprintTx(ctx context.Context, tx pgx.Tx, 
 		return false, fmt.Errorf("record crypto webhook fingerprint tx: %w", err)
 	}
 	return ct.RowsAffected() == 1, nil
+}
+
+// StuckInvoice — сжатая форма записи crypto_invoices, нужная для recovery-воркера.
+// Не несёт всех полей — только то, что нужно для пометки failed и уведомления юзера.
+type StuckInvoice struct {
+	OrderID    string
+	TelegramID int64
+	CreatedAt  time.Time
+}
+
+// LockStuckCreatingInvoicesTx находит инвойсы в статусе 'creating', созданные раньше
+// cutoff, и блокирует их FOR UPDATE SKIP LOCKED, чтобы два параллельных воркера
+// (теоретически: при горизонтальном масштабировании сервиса) не наступали друг другу.
+// На v1 сервис в одном экземпляре, но SKIP LOCKED — дешёвая страховка.
+func (r *Repository) LockStuckCreatingInvoicesTx(ctx context.Context, tx pgx.Tx, cutoff time.Time, limit int) ([]StuckInvoice, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT order_id, telegram_id, created_at
+		FROM crypto_invoices
+		WHERE status = 'creating'
+		  AND created_at < $1
+		ORDER BY id ASC
+		LIMIT $2
+		FOR UPDATE SKIP LOCKED
+	`, cutoff, limit)
+	if err != nil {
+		return nil, fmt.Errorf("lock stuck creating invoices tx: %w", err)
+	}
+	defer rows.Close()
+
+	var out []StuckInvoice
+	for rows.Next() {
+		var s StuckInvoice
+		if err := rows.Scan(&s.OrderID, &s.TelegramID, &s.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan stuck invoice: %w", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate stuck invoices: %w", err)
+	}
+	return out, nil
 }

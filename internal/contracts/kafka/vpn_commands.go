@@ -46,10 +46,3 @@ type NodeRevokeUserCommand struct {
 	Profiles   []VPNNodeUserProfile `json:"profiles,omitempty"`
 	CreatedAt  time.Time            `json:"created_at"`
 }
-
-type NodePingCommand struct {
-	Type      VPNCommandType `json:"type"`
-	CommandID string         `json:"command_id"`
-	NodeID    string         `json:"node_id"`
-	CreatedAt time.Time      `json:"created_at"`
-}

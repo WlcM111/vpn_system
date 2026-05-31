@@ -33,10 +33,6 @@ func NewReader(brokers []string, topic, groupID string) *kafkago.Reader {
 	})
 }
 
-func RunConsumer(ctx context.Context, reader *kafkago.Reader, serviceName string, handle Handler) error {
-	return RunConsumerWithDLT(ctx, reader, serviceName, handle, nil, "")
-}
-
 func RunConsumerWithDLT(ctx context.Context, reader *kafkago.Reader, serviceName string, handle Handler, dltProducer *Producer, dltTopic string) error {
 	if reader == nil {
 		return nil
