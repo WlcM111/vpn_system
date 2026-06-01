@@ -107,6 +107,21 @@ func (h *HTTPHandlers) handleCheckoutFail(w http.ResponseWriter, _ *http.Request
 	_, _ = w.Write([]byte("Платеж не был завершен. Вернись в Telegram-бота и попробуй снова."))
 }
 
+// defaultYooKassaTrustedNets — актуальный официальный список подсетей YooKassa,
+// с которых приходят уведомления. Источник: yookassa.ru/developers/using-api/webhooks.
+// Сверять раз в квартал или при росте отказов IP-фильтра.
+func defaultYooKassaTrustedNets() []string {
+	return []string{
+		"185.71.76.0/27",
+		"185.71.77.0/27",
+		"77.75.153.0/25",
+		"77.75.156.11/32",
+		"77.75.156.35/32",
+		"77.75.154.128/25",
+		"2a02:5180::/32",
+	}
+}
+
 func isTrustedYooKassaIP(remoteAddr string) bool {
 	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
@@ -117,15 +132,17 @@ func isTrustedYooKassaIP(remoteAddr string) bool {
 		return false
 	}
 
-	cidrs := []string{
-		"185.71.76.0/27",
-		"185.71.77.0/27",
-		"77.75.153.0/25",
-		"77.75.156.11/32",
-		"77.75.156.35/32",
-		"77.75.154.128/25",
-		"2a02:5180::/32",
+	cidrs := defaultYooKassaTrustedNets()
+	if raw := strings.TrimSpace(os.Getenv("YOOKASSA_TRUSTED_IPS")); raw != "" {
+		parts := strings.Split(raw, ",")
+		cidrs = cidrs[:0]
+		for _, p := range parts {
+			if p = strings.TrimSpace(p); p != "" {
+				cidrs = append(cidrs, p)
+			}
+		}
 	}
+
 	for _, raw := range cidrs {
 		_, network, err := net.ParseCIDR(raw)
 		if err == nil && network.Contains(ip) {

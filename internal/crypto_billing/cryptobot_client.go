@@ -56,15 +56,21 @@ type createInvoiceRequest struct {
 // Поля для оплаты (Pay URL'ы) могут приходить под разными именами в зависимости от
 // версии API и настроек приложения — берём первое непустое (см. PickPayURL).
 type CryptoBotInvoice struct {
-	InvoiceID   int64  `json:"invoice_id"`
-	Status      string `json:"status"`
-	Hash        string `json:"hash"`
-	Asset       string `json:"asset"`
-	Amount      string `json:"amount"`
-	PayURL      string `json:"pay_url"` // legacy, web pay URL
-	MiniAppPay  string `json:"mini_app_pay_url,omitempty"`
-	WebAppPay   string `json:"web_app_invoice_url,omitempty"`
-	BotPay      string `json:"bot_invoice_url,omitempty"` // ссылка на @CryptoBot внутри Telegram
+	InvoiceID int64  `json:"invoice_id"`
+	Status    string `json:"status"`
+	Hash      string `json:"hash"`
+	Asset     string `json:"asset"`
+	Amount    string `json:"amount"`
+	// Актуальные поля ссылок оплаты (Crypto Pay API 1.4+).
+	// bot_invoice_url — основная ссылка: открывает оплату в @CryptoBot внутри Telegram.
+	// mini_app_invoice_url — версия для Telegram Mini App.
+	// web_app_invoice_url — веб-версия Crypto Bot.
+	BotPay     string `json:"bot_invoice_url,omitempty"`
+	MiniAppPay string `json:"mini_app_invoice_url,omitempty"`
+	WebAppPay  string `json:"web_app_invoice_url,omitempty"`
+	// PayURL — устаревшее поле pay_url (deprecated с API 1.2). Оставлено только как
+	// последний fallback на случай старого ответа; новый код полагается на bot_invoice_url.
+	PayURL      string `json:"pay_url,omitempty"`
 	Description string `json:"description"`
 	CreatedAt   string `json:"created_at"`
 	Payload     string `json:"payload"`
@@ -176,18 +182,18 @@ func VerifyWebhookSignature(apiToken, signatureHex string, rawBody []byte) bool 
 }
 
 // PickPayURL выбирает лучший из доступных URL'ов оплаты.
-// CryptoBot отдаёт несколько вариантов: для нашего случая (Telegram-бот) приоритет —
-// mini_app_pay_url, который открывает CryptoBot внутри Telegram без выхода.
-// fallback'и — bot_invoice_url, web_app_invoice_url, и старый pay_url.
+// Приоритет для нашего сценария (Telegram-бот): bot_invoice_url — открывает оплату
+// прямо в @CryptoBot внутри Telegram. Затем mini_app / web. pay_url (deprecated) —
+// самый последний fallback на случай старого формата ответа.
 func PickPayURL(inv *CryptoBotInvoice) string {
 	if inv == nil {
 		return ""
 	}
-	if inv.MiniAppPay != "" {
-		return inv.MiniAppPay
-	}
 	if inv.BotPay != "" {
 		return inv.BotPay
+	}
+	if inv.MiniAppPay != "" {
+		return inv.MiniAppPay
 	}
 	if inv.WebAppPay != "" {
 		return inv.WebAppPay

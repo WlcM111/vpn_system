@@ -162,6 +162,7 @@ services:
       migrate:
         condition: service_completed_successfully
     environment:
+      TRIAL_DAYS: ${TRIAL_DAYS:-1}
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       KAFKA_BROKERS: kafka:9092
       REDIS_ADDR: redis:6379

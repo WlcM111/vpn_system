@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,11 +34,20 @@ func NewService(repo *Repository, publicBaseURL, defaultCountry string) *Service
 		publicBaseURL = "http://localhost:8084/sub/"
 	}
 
+	// Длительность триала из env, по умолчанию 1 день. Короткий триал снижает
+	// ценность фарма через новые Telegram-аккаунты (главный фрод-вектор сервиса).
+	trialDays := 1
+	if raw := strings.TrimSpace(os.Getenv("TRIAL_DAYS")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			trialDays = n
+		}
+	}
+
 	return &Service{
 		repo:           repo,
 		publicBaseURL:  publicBaseURL,
 		defaultCountry: defaultCountry,
-		trialDays:      3,
+		trialDays:      trialDays,
 	}
 }
 

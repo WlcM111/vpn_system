@@ -227,6 +227,24 @@ func (s *Service) ProcessWebhook(ctx context.Context, raw []byte, fingerprint st
 		return fmt.Errorf("decode webhook: %w", err)
 	}
 
+	// Replay-защита: CryptoBot рекомендует проверять request_date и отбрасывать
+	// устаревшие вебхуки. HMAC защищает подлинность, но не повторное проигрывание.
+	// Окно 15 минут — с запасом на легитимные задержки и расхождение часов.
+	if update.RequestDate != "" {
+		if reqTime, err := time.Parse(time.RFC3339, update.RequestDate); err == nil {
+			if age := time.Since(reqTime); age > 15*time.Minute || age < -15*time.Minute {
+				slog.Warn("crypto-billing webhook rejected: stale request_date",
+					"request_date", update.RequestDate, "age_seconds", age.Seconds())
+				// Возвращаем nil (а не ошибку), чтобы CryptoBot не ретраил бесконечно
+				// заведомо устаревший запрос. Это не наша ошибка обработки.
+				return nil
+			}
+		} else {
+			slog.Warn("crypto-billing webhook: cannot parse request_date, proceeding",
+				"request_date", update.RequestDate, "err", err)
+		}
+	}
+
 	// На v1 нас интересует только "invoice_paid". Другие типы (invoice_expired, и т.д.)
 	// можно будет добавить позже.
 	if update.UpdateType != "invoice_paid" {
@@ -287,8 +305,6 @@ func (s *Service) ProcessWebhook(ctx context.Context, raw []byte, fingerprint st
 			"invoice_id", invoiceIDStr, "expected", inv.AmountValue, "got", ip.Amount)
 		return tx.Commit(ctx)
 	}
-
-	// Шаг 3: пометить как paid. Если уже был paid — UPDATE не сработает (RowsAffected=0).
 
 	// Шаг 3: пометить как paid. Если уже был paid — UPDATE не сработает (RowsAffected=0).
 	updated, err := s.repo.MarkInvoicePaidTx(ctx, tx, inv.OrderID, raw)
