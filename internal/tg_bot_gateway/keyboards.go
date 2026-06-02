@@ -5,7 +5,7 @@ import tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 const (
 	btnBuySubscription = "💳 Купить подписку"
 	btnMySubscription  = "📦 Моя подписка"
-	btnTrial           = "✨ Пробный период 3 дня"
+	btnTrial           = "✨ Пробный период"
 	btnCancelSub       = "⛔ Отменить подписку"
 	btnDownloadVPN     = "⬇️ Скачать приложение"
 	btnSupport         = "🆘 Поддержка"

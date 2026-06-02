@@ -23,6 +23,12 @@ var (
 
 type ServiceConfig struct {
 	FeedFormat string
+
+	// Балансировка (все значения приходят из env через main.go).
+	NodeHeartbeatTTL time.Duration // нода жива, если heartbeat не старше этого
+	DefaultMaxUsers  int           // лимит пользователей на ноду по умолчанию
+	DefaultWeight    int           // вес ноды по умолчанию
+	SoftOverflow     bool          // выдавать переполненную ноду вместо отказа
 }
 
 type Service struct {
@@ -43,7 +49,15 @@ func NewService(repo *Repository, producer *commonkafka.Producer, cfg ServiceCon
 	if cfg.FeedFormat == "" {
 		cfg.FeedFormat = "base64"
 	}
-	return &Service{repo: repo, producer: producer, allocator: NewAllocator(), cfg: cfg}
+	if cfg.NodeHeartbeatTTL <= 0 {
+		cfg.NodeHeartbeatTTL = 90 * time.Second
+	}
+	return &Service{
+		repo:      repo,
+		producer:  producer,
+		allocator: NewAllocator(cfg.NodeHeartbeatTTL, cfg.SoftOverflow),
+		cfg:       cfg,
+	}
 }
 
 func (s *Service) RenderSubscriptionFeedDetailed(ctx context.Context, token string) (*SubscriptionFeedResult, error) {
@@ -109,13 +123,9 @@ func accessAllowed(state *AccessState, now time.Time) bool {
 }
 
 func (s *Service) ensureUserCredentialsAndSync(ctx context.Context, access *AccessState) ([]FeedItem, error) {
-	items, err := s.repo.ListEnabledPoolItems(ctx)
+	items, err := s.selectBalancedItems(ctx, access.TelegramID)
 	if err != nil {
 		return nil, err
-	}
-	items = s.allocator.SortPoolItems(items)
-	if len(items) == 0 {
-		return nil, ErrNoPoolItems
 	}
 
 	feedItems, err := s.repo.EnsureCredentialsForItems(ctx, access.TelegramID, access.AccessRev, items)
@@ -130,15 +140,42 @@ func (s *Service) ensureUserCredentialsAndSync(ctx context.Context, access *Acce
 }
 
 func (s *Service) ensureUserCredentials(ctx context.Context, access *AccessState) ([]FeedItem, error) {
+	items, err := s.selectBalancedItems(ctx, access.TelegramID)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.EnsureCredentialsForItems(ctx, access.TelegramID, access.AccessRev, items)
+}
+
+// selectBalancedItems загружает пул-айтемы и метрики нод, затем через аллокатор
+// выбирает по одному профилю на страну (балансировка внутри страны).
+func (s *Service) selectBalancedItems(ctx context.Context, telegramID int64) ([]PoolItem, error) {
 	items, err := s.repo.ListEnabledPoolItems(ctx)
 	if err != nil {
 		return nil, err
 	}
-	items = s.allocator.SortPoolItems(items)
 	if len(items) == 0 {
 		return nil, ErrNoPoolItems
 	}
-	return s.repo.EnsureCredentialsForItems(ctx, access.TelegramID, access.AccessRev, items)
+
+	servers, err := s.repo.LoadServersByCountry(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	sticky := func(itemKey string) string {
+		sk, err := s.repo.GetUserServerForItem(ctx, telegramID, itemKey)
+		if err != nil {
+			return ""
+		}
+		return sk
+	}
+
+	selected := s.allocator.Allocate(items, servers, sticky, time.Now().UTC())
+	if len(selected) == 0 {
+		return nil, ErrNoPoolItems
+	}
+	return selected, nil
 }
 
 func (s *Service) publishSyncCommands(ctx context.Context, access *AccessState, feedItems []FeedItem) error {

@@ -116,7 +116,7 @@ func (s *Service) HandleStartTrial(ctx context.Context, cmd *kafkacontracts.Star
 		TelegramID: cmd.TelegramID,
 		ParseMode:  "Markdown",
 		Message: fmt.Sprintf(
-			"✨ Пробный период на *3 дня* активирован!\nСтрана по умолчанию: 🇱🇹 Литва\nДействует до: *%s*.\n\nСейчас пришлю одну ссылку доступа. Внутри неё будет весь доступный пул серверов.",
+			"✨ Пробный период на *%d дн.* активирован!\nСтрана по умолчанию: 🇱🇹 Литва\nДействует до: *%s*.\n\nСейчас пришлю одну ссылку доступа. Внутри неё будет весь доступный пул серверов.",
 			state.ExpiresAt.Format("02.01.2006"),
 		),
 		Keyboard: kafkacontracts.TgKeyboardMySubscriptionConfig,
@@ -417,7 +417,7 @@ func (s *Service) HandleBillingAccessExpired(ctx context.Context, event *kafkaco
 
 	if err := s.notifyTx(ctx, tx, kafkacontracts.TgNotification{
 		TelegramID: event.TelegramID,
-		Message:    "⛔ Доступ остановлен, потому что оплату не удалось продлить после grace period.\n\nЧтобы снова включить VPN, оформи подписку заново.",
+		Message:    "⛔ Доступ остановлен, потому что оплату не удалось продлить вовремя.\n\nЧтобы снова включить доступ, оформи подписку заново.",
 		Keyboard:   kafkacontracts.TgKeyboardTrialOrBuy,
 	}); err != nil {
 		return err
@@ -459,7 +459,7 @@ func (s *Service) sendStatusNotificationTx(ctx context.Context, tx pgx.Tx, state
 			TelegramID: state.TelegramID,
 			Message: "Пока у тебя нет активной подписки.\n\n" +
 				"Ты можешь:\n" +
-				"• оформить пробный период на 3 дня,\n" +
+				fmt.Sprintf("• оформить пробный период на %d дн.,\n", s.trialDays) +
 				"• или купить подписку.\n\n" +
 				"Выбирай 👇",
 			Keyboard: kafkacontracts.TgKeyboardTrialOrBuy,

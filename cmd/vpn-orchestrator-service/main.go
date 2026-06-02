@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -59,7 +60,11 @@ func main() {
 
 	repo := vpn_orchestrator.NewRepository(pool)
 	svc := vpn_orchestrator.NewService(repo, producer, vpn_orchestrator.ServiceConfig{
-		FeedFormat: strings.TrimSpace(os.Getenv("SUBSCRIPTION_FEED_FORMAT")),
+		FeedFormat:       strings.TrimSpace(os.Getenv("SUBSCRIPTION_FEED_FORMAT")),
+		NodeHeartbeatTTL: parseDurationEnv("NODE_HEARTBEAT_TTL", 90*time.Second),
+		DefaultMaxUsers:  parseIntEnv("NODE_DEFAULT_MAX_USERS", 200),
+		DefaultWeight:    parseIntEnv("NODE_DEFAULT_WEIGHT", 100),
+		SoftOverflow:     parseBoolEnv("BALANCER_SOFT_OVERFLOW", true),
 	})
 
 	httpAddr := strings.TrimSpace(os.Getenv("VPN_ORCHESTRATOR_HTTP_ADDR"))
@@ -128,4 +133,40 @@ func main() {
 		_ = producer.Close()
 	}
 	_ = server.Shutdown(shutdownCtx)
+}
+
+func parseDurationEnv(key string, fallback time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	if d, err := time.ParseDuration(v); err == nil && d > 0 {
+		return d
+	}
+	return fallback
+}
+
+func parseIntEnv(key string, fallback int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		return n
+	}
+	return fallback
+}
+
+func parseBoolEnv(key string, fallback bool) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if v == "" {
+		return fallback
+	}
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	}
+	return fallback
 }

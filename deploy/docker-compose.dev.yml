@@ -196,6 +196,10 @@ services:
       migrate:
         condition: service_completed_successfully
     environment:
+      NODE_HEARTBEAT_TTL: ${NODE_HEARTBEAT_TTL:-90s}
+      NODE_DEFAULT_MAX_USERS: ${NODE_DEFAULT_MAX_USERS:-200}
+      NODE_DEFAULT_WEIGHT: ${NODE_DEFAULT_WEIGHT:-100}
+      BALANCER_SOFT_OVERFLOW: ${BALANCER_SOFT_OVERFLOW:-true}
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       KAFKA_BROKERS: kafka:9092
       REDIS_ADDR: redis:6379

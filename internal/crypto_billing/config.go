@@ -62,7 +62,7 @@ func LoadConfigFromEnv() (Config, error) {
 	cfg.Plans = map[kafkacontracts.PlanCode]Plan{
 		kafkacontracts.PlanCodeMonthly: {
 			Code:         kafkacontracts.PlanCodeMonthly,
-			Title:        "VPN подписка 30 дней",
+			Title:        "Подписка на сервис защищённого соединения (30 дней)",
 			DurationDays: 30,
 			Prices: map[kafkacontracts.CryptoAsset]string{
 				kafkacontracts.CryptoAssetUSDT: envOr("CRYPTO_PLAN_MONTHLY_USDT", "5.00"),
@@ -73,7 +73,7 @@ func LoadConfigFromEnv() (Config, error) {
 		},
 		kafkacontracts.PlanCodeQuarterly: {
 			Code:         kafkacontracts.PlanCodeQuarterly,
-			Title:        "VPN подписка 90 дней",
+			Title:        "Подписка на сервис защищённого соединения (90 дней)",
 			DurationDays: 90,
 			Prices: map[kafkacontracts.CryptoAsset]string{
 				kafkacontracts.CryptoAssetUSDT: envOr("CRYPTO_PLAN_QUARTERLY_USDT", "13.00"),

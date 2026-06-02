@@ -95,14 +95,14 @@ func NewService(repo *Repository, producer *commonkafka.Producer) *Service {
 		plans: map[kafkacontracts.PlanCode]Plan{
 			kafkacontracts.PlanCodeMonthly: {
 				Code:         kafkacontracts.PlanCodeMonthly,
-				Title:        "VPN подписка на 30 дней",
+				Title:        "Подписка на сервис защищённого соединения (30 дней)",
 				AmountValue:  monthlyPrice,
 				Currency:     "RUB",
 				DurationDays: 30,
 			},
 			kafkacontracts.PlanCodeQuarterly: {
 				Code:         kafkacontracts.PlanCodeQuarterly,
-				Title:        "VPN подписка на 90 дней",
+				Title:        "Подписка на сервис защищённого соединения (90 дней)",
 				AmountValue:  quarterlyPrice,
 				Currency:     "RUB",
 				DurationDays: 90,
@@ -726,7 +726,7 @@ func (s *Service) chargeRecurringProfile(ctx context.Context, p *RecurringProfil
 	attemptNo := p.RetryCount + 1
 	orderID := fmt.Sprintf("renewal:%d:%s:%d", p.TelegramID, p.PlanCode, attemptNo)
 	idempotenceKey := orderID
-	description := fmt.Sprintf("Автопродление VPN подписки (%s)", p.PlanCode)
+	description := fmt.Sprintf("Автопродление подписки на сервис защищённого соединения (%s)", p.PlanCode)
 
 	record := &PaymentRecord{
 		OrderID:           orderID,

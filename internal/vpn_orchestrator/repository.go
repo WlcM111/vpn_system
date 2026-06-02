@@ -75,6 +75,45 @@ type FeedItem struct {
 	URL        string
 }
 
+// ServerLoad — данные о ноде для балансировщика.
+type ServerLoad struct {
+	ServerKey       string
+	CountryCode     string
+	Enabled         bool
+	MaxUsers        int
+	ActiveUsers     int
+	Weight          int
+	LastHeartbeatAt *time.Time
+}
+
+// AliveByHeartbeat — нода включена и шлёт свежий heartbeat (без учёта ёмкости).
+func (s ServerLoad) AliveByHeartbeat(now time.Time, heartbeatTTL time.Duration) bool {
+	if !s.Enabled {
+		return false
+	}
+	// Нода только заведена, heartbeat ещё не приходил — считаем живой,
+	// чтобы её можно было ввести в работу до первого heartbeat.
+	if s.LastHeartbeatAt == nil {
+		return true
+	}
+	return now.Sub(*s.LastHeartbeatAt) <= heartbeatTTL
+}
+
+// HasCapacity — есть ли свободные места по мягкому лимиту max_users.
+func (s ServerLoad) HasCapacity() bool {
+	return s.MaxUsers <= 0 || s.ActiveUsers < s.MaxUsers
+}
+
+// LoadScore — «стоимость» ноды для least-load выбора. Чем меньше, тем предпочтительнее.
+// Загрузка нормируется на вес: (active_users + 1) / weight.
+func (s ServerLoad) LoadScore() float64 {
+	w := s.Weight
+	if w <= 0 {
+		w = 1
+	}
+	return float64(s.ActiveUsers+1) / float64(w)
+}
+
 func (r *Repository) GetAccessByToken(ctx context.Context, token string) (*AccessState, error) {
 	row := r.pool.QueryRow(ctx, `
 		SELECT
@@ -174,6 +213,72 @@ func (r *Repository) ListEnabledPoolItems(ctx context.Context) ([]PoolItem, erro
 	return items, nil
 }
 
+// LoadServersByCountry возвращает карту country_code -> ноды этой страны с метриками.
+func (r *Repository) LoadServersByCountry(ctx context.Context) (map[string][]ServerLoad, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT server_key, country_code, enabled, max_users, active_users, weight, last_heartbeat_at
+		FROM vpn_servers
+		WHERE enabled = true
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("load servers by country: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string][]ServerLoad)
+	for rows.Next() {
+		var s ServerLoad
+		if err := rows.Scan(&s.ServerKey, &s.CountryCode, &s.Enabled,
+			&s.MaxUsers, &s.ActiveUsers, &s.Weight, &s.LastHeartbeatAt); err != nil {
+			return nil, fmt.Errorf("scan server load: %w", err)
+		}
+		out[s.CountryCode] = append(out[s.CountryCode], s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate server loads: %w", err)
+	}
+	return out, nil
+}
+
+// GetUserServerForItem возвращает server_key, к которому пользователь уже привязан
+// для item_key (sticky). Пустая строка — привязки нет.
+func (r *Repository) GetUserServerForItem(ctx context.Context, telegramID int64, itemKey string) (string, error) {
+	var serverKey string
+	err := r.pool.QueryRow(ctx, `
+		SELECT server_key FROM vpn_user_node_credentials
+		WHERE telegram_id = $1 AND item_key = $2 AND enabled = true
+	`, telegramID, itemKey).Scan(&serverKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get user server for item: %w", err)
+	}
+	return serverKey, nil
+}
+
+func (r *Repository) incActiveUsersInTx(ctx context.Context, tx pgx.Tx, serverKey string) error {
+	if strings.TrimSpace(serverKey) == "" {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `UPDATE vpn_servers SET active_users = active_users + 1, updated_at = now() WHERE server_key = $1`, serverKey)
+	if err != nil {
+		return fmt.Errorf("inc active users %s: %w", serverKey, err)
+	}
+	return nil
+}
+
+func (r *Repository) decActiveUsersInTx(ctx context.Context, tx pgx.Tx, serverKey string) error {
+	if strings.TrimSpace(serverKey) == "" {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `UPDATE vpn_servers SET active_users = GREATEST(active_users - 1, 0), updated_at = now() WHERE server_key = $1`, serverKey)
+	if err != nil {
+		return fmt.Errorf("dec active users %s: %w", serverKey, err)
+	}
+	return nil
+}
+
 func (r *Repository) EnsureCredentialsForItems(ctx context.Context, telegramID int64, accessRev int64, items []PoolItem) ([]FeedItem, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -186,6 +291,8 @@ func (r *Repository) EnsureCredentialsForItems(ctx context.Context, telegramID i
 		newUUID := uuid.NewString()
 		email := buildEmail(telegramID, item.ItemKey)
 
+		var wasInserted bool
+		var prevServerKey string
 		row := tx.QueryRow(ctx, `
 			INSERT INTO vpn_user_node_credentials (
 				telegram_id, item_key, server_key, node_id, inbound_tag,
@@ -200,12 +307,29 @@ func (r *Repository) EnsureCredentialsForItems(ctx context.Context, telegramID i
 				enabled = true,
 				updated_at = now()
 			RETURNING telegram_id, item_key, server_key, node_id, inbound_tag,
-			          email, vless_uuid, access_rev, enabled
+			          email, vless_uuid, access_rev, enabled,
+			          (xmax = 0) AS was_inserted,
+			          (CASE WHEN xmax = 0 THEN '' ELSE vpn_user_node_credentials.server_key END) AS prev_server_key
 		`, telegramID, item.ItemKey, item.ServerKey, item.NodeID, item.InboundTag, email, newUUID, accessRev)
 
-		cred, err := scanCredential(row)
+		cred, err := scanCredentialWithMeta(row, &wasInserted, &prevServerKey)
 		if err != nil {
 			return nil, fmt.Errorf("ensure credential item_key=%s: %w", item.ItemKey, err)
+		}
+
+		// Обновляем active_users: новая учётка → +1; переезд на другую ноду → +1 новой, -1 старой;
+		// та же нода (sticky) → ничего.
+		if wasInserted {
+			if err := r.incActiveUsersInTx(ctx, tx, item.ServerKey); err != nil {
+				return nil, err
+			}
+		} else if prevServerKey != "" && prevServerKey != item.ServerKey {
+			if err := r.incActiveUsersInTx(ctx, tx, item.ServerKey); err != nil {
+				return nil, err
+			}
+			if err := r.decActiveUsersInTx(ctx, tx, prevServerKey); err != nil {
+				return nil, err
+			}
 		}
 
 		out = append(out, FeedItem{
@@ -252,6 +376,17 @@ func (r *Repository) DisableUserCredentials(ctx context.Context, telegramID int6
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate disabled credentials: %w", err)
+	}
+
+	rows.Close()
+
+	// Декремент active_users на нодах, где отключены учётки.
+	for _, c := range out {
+		if c.ServerKey != "" {
+			if err := r.decActiveUsersInTx(ctx, tx, c.ServerKey); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -342,6 +477,27 @@ func scanAccessState(row pgx.Row) (*AccessState, error) {
 	return &state, nil
 }
 
+// scanCredentialWithMeta — как scanCredential, плюс читает was_inserted и prev_server_key.
+func scanCredentialWithMeta(row pgx.Row, wasInserted *bool, prevServerKey *string) (*UserCredential, error) {
+	var cred UserCredential
+	if err := row.Scan(
+		&cred.TelegramID,
+		&cred.ItemKey,
+		&cred.ServerKey,
+		&cred.NodeID,
+		&cred.InboundTag,
+		&cred.Email,
+		&cred.VLESSUUID,
+		&cred.AccessRev,
+		&cred.Enabled,
+		wasInserted,
+		prevServerKey,
+	); err != nil {
+		return nil, err
+	}
+	return &cred, nil
+}
+
 func scanCredential(row pgx.Row) (*UserCredential, error) {
 	var cred UserCredential
 	if err := row.Scan(
@@ -427,6 +583,8 @@ type AdminNodeRequest struct {
 	SNI               string `json:"sni"`
 	WSPath            string `json:"ws_path"`
 	Flow              string `json:"flow"`
+	MaxUsers          int    `json:"max_users"`
+	Weight            int    `json:"weight"`
 	Enabled           bool   `json:"enabled"`
 }
 
@@ -453,11 +611,17 @@ func (r *Repository) UpsertAdminNode(ctx context.Context, req AdminNodeRequest) 
 	if req.Port <= 0 {
 		req.Port = 443
 	}
+	if req.MaxUsers <= 0 {
+		req.MaxUsers = 200
+	}
+	if req.Weight <= 0 {
+		req.Weight = 100
+	}
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO vpn_servers (
 			server_key, node_id, country_code, title, public_host, port, transport, security,
-			default_inbound_tag, host_header, sni, ws_path, flow, enabled
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+			default_inbound_tag, host_header, sni, ws_path, flow, enabled, max_users, weight
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		ON CONFLICT (server_key) DO UPDATE SET
 			node_id=EXCLUDED.node_id,
 			country_code=EXCLUDED.country_code,
@@ -472,8 +636,10 @@ func (r *Repository) UpsertAdminNode(ctx context.Context, req AdminNodeRequest) 
 			ws_path=EXCLUDED.ws_path,
 			flow=EXCLUDED.flow,
 			enabled=EXCLUDED.enabled,
+			max_users=EXCLUDED.max_users,
+			weight=EXCLUDED.weight,
 			updated_at=now()
-	`, req.ServerKey, req.NodeID, req.CountryCode, req.Title, req.PublicHost, req.Port, req.Transport, req.Security, req.DefaultInboundTag, req.HostHeader, req.SNI, req.WSPath, req.Flow, req.Enabled)
+	`, req.ServerKey, req.NodeID, req.CountryCode, req.Title, req.PublicHost, req.Port, req.Transport, req.Security, req.DefaultInboundTag, req.HostHeader, req.SNI, req.WSPath, req.Flow, req.Enabled, req.MaxUsers, req.Weight)
 	return err
 }
 
