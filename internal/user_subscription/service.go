@@ -117,6 +117,7 @@ func (s *Service) HandleStartTrial(ctx context.Context, cmd *kafkacontracts.Star
 		ParseMode:  "Markdown",
 		Message: fmt.Sprintf(
 			"✨ Пробный период на *%d дн.* активирован!\nСтрана по умолчанию: 🇱🇹 Литва\nДействует до: *%s*.\n\nСейчас пришлю одну ссылку доступа. Внутри неё будет весь доступный пул серверов.",
+			s.trialDays,
 			state.ExpiresAt.Format("02.01.2006"),
 		),
 		Keyboard: kafkacontracts.TgKeyboardMySubscriptionConfig,

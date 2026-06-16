@@ -168,22 +168,6 @@ func (r *Repository) GetPaymentByPaymentID(ctx context.Context, paymentID string
 	return r.scanPayment(row, "get payment by payment_id")
 }
 
-func (r *Repository) GetPaymentByOrderID(ctx context.Context, orderID string) (*PaymentRecord, error) {
-	row := r.pool.QueryRow(ctx, `
-		SELECT
-			order_id, telegram_id, checkout_type, plan_code, duration_days,
-			payment_id, status, amount_value::text, currency, description,
-			confirmation_url, idempotence_key, save_payment_method,
-			COALESCE(payment_method_id, ''),
-			COALESCE(cancellation_reason, ''),
-			metadata, raw_response, created_at, updated_at
-		FROM payments
-		WHERE order_id = $1
-	`, orderID)
-
-	return r.scanPayment(row, "get payment by order_id")
-}
-
 func (r *Repository) scanPayment(row pgx.Row, op string) (*PaymentRecord, error) {
 	var p PaymentRecord
 	var metaRaw []byte
