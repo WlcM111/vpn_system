@@ -12,6 +12,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+// ---------------------------------------------------------------------------
+// Технические метрики (поток сообщений, HTTP, длительности обработчиков).
+// Инкрементируются в коде сервисов по мере обработки.
+// ---------------------------------------------------------------------------
+
 var (
 	KafkaConsumedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "vpn_platform_kafka_consumed_total",
@@ -40,8 +45,102 @@ var (
 	}, []string{"topic"})
 )
 
+// ---------------------------------------------------------------------------
+// Бизнес-метрики (gauge). Выставляются фоновым сборщиком из БД
+// (см. internal/vpn_orchestrator/metrics_collector.go).
+// Это срез текущего состояния системы, который видно в Grafana.
+// ---------------------------------------------------------------------------
+
+var (
+	// Кол-во пользователей по статусу подписки: none/trial/active/grace/expired.
+	SubscriptionsByStatus = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_subscriptions_total",
+		Help: "Number of user subscriptions by status.",
+	}, []string{"status"})
+
+	// Кол-во активных пользователей на ноде (active_users из vpn_servers).
+	NodeActiveUsers = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_node_active_users",
+		Help: "Active users currently allocated to a node.",
+	}, []string{"server_key", "country", "title"})
+
+	// Лимит пользователей на ноде (max_users).
+	NodeMaxUsers = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_node_max_users",
+		Help: "Maximum users capacity of a node.",
+	}, []string{"server_key", "country", "title"})
+
+	// Процент заполнения ноды (0..100).
+	NodeLoadPercent = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_node_load_percent",
+		Help: "Node fill percentage (active/max * 100).",
+	}, []string{"server_key", "country", "title"})
+
+	// Живость ноды по heartbeat: 1 — heartbeat свежий, 0 — устарел/отсутствует.
+	NodeUp = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_node_up",
+		Help: "Node liveness by heartbeat freshness (1 alive, 0 stale/down).",
+	}, []string{"server_key", "country", "title"})
+
+	// Секунды с момента последнего heartbeat ноды.
+	NodeHeartbeatAgeSeconds = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_node_heartbeat_age_seconds",
+		Help: "Seconds since last heartbeat of a node.",
+	}, []string{"server_key", "country", "title"})
+
+	// Кол-во нод по состоянию: enabled/disabled/alive/stale.
+	NodesCount = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_nodes_count",
+		Help: "Number of nodes by state.",
+	}, []string{"state"})
+
+	// Суммарная вместимость и занятость пула (для общей картины).
+	PoolCapacityTotal = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "vpn_platform_pool_capacity_total",
+		Help: "Total max_users capacity across enabled nodes.",
+	})
+	PoolActiveTotal = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "vpn_platform_pool_active_total",
+		Help: "Total active_users across enabled nodes.",
+	})
+
+	// Кол-во профилей в пуле (vpn_pool_items) по доступности.
+	PoolItemsCount = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_pool_items_count",
+		Help: "Number of pool items (profiles) by state.",
+	}, []string{"state"})
+
+	// Крипто-инвойсы по статусу (creating/active/paid/expired и т.п.).
+	CryptoInvoicesByStatus = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_crypto_invoices_total",
+		Help: "Crypto invoices by status.",
+	}, []string{"status"})
+
+	// Трафик ноды в байтах (накопительный). ЗАГЛУШКА на этапе MVP:
+	// источник — Xray Stats API на ноде, который node-agent должен публиковать.
+	// Пока метрика регистрируется, но не наполняется (см. README по мониторингу).
+	NodeTrafficBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_node_traffic_bytes",
+		Help: "Node traffic in bytes by direction (uplink/downlink). Populated by node-agent (future).",
+	}, []string{"server_key", "country", "direction"})
+
+	// Время последнего успешного сбора DB-метрик (для контроля живости сборщика).
+	MetricsCollectorLastRun = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "vpn_platform_metrics_collector_last_run_timestamp",
+		Help: "Unix timestamp of the last successful DB metrics collection.",
+	})
+)
+
 func init() {
-	prometheus.MustRegister(KafkaConsumedTotal, KafkaPublishedTotal, HTTPRequestsTotal, BillingPaymentsTotal, KafkaHandlerDuration)
+	prometheus.MustRegister(
+		// технические
+		KafkaConsumedTotal, KafkaPublishedTotal, HTTPRequestsTotal, BillingPaymentsTotal, KafkaHandlerDuration,
+		// бизнес-метрики
+		SubscriptionsByStatus,
+		NodeActiveUsers, NodeMaxUsers, NodeLoadPercent, NodeUp, NodeHeartbeatAgeSeconds,
+		NodesCount, PoolCapacityTotal, PoolActiveTotal, PoolItemsCount,
+		CryptoInvoicesByStatus, NodeTrafficBytes, MetricsCollectorLastRun,
+	)
 }
 
 func Handler() http.Handler { return promhttp.Handler() }

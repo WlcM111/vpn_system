@@ -1,0 +1,13 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    # имя контейнера Prometheus в docker-сети deploy_default
+    url: http://vpn-platform-prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s

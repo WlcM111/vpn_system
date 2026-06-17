@@ -116,6 +116,15 @@ func main() {
 
 	go outbox.RunPublisher(ctx, pool, producer, "vpn-orchestrator-service")
 
+	// Фоновый сборщик бизнес-метрик из БД для Prometheus/Grafana.
+	// Интервал и TTL heartbeat настраиваются через env (значения по умолчанию ниже).
+	metricsCollector := vpn_orchestrator.NewMetricsCollector(
+		pool,
+		parseDurationEnv("METRICS_COLLECT_INTERVAL", 15*time.Second),
+		parseDurationEnv("NODE_HEARTBEAT_TTL", 90*time.Second),
+	)
+	go metricsCollector.Run(ctx)
+
 	<-stop
 	log.Println("[vpn-orchestrator] shutting down...")
 	appCancel()

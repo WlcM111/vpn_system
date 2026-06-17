@@ -1,0 +1,33 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: vpn-platform
+
+scrape_configs:
+  # Сам Prometheus (для контроля, что он жив)
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # 5 микросервисов платформы. Они в той же docker-сети (deploy_default),
+  # поэтому адресуемся по именам контейнеров, порт 9090 (METRICS_ADDR=:9090).
+  # Лейбл "service" попадёт в метрики и используется в дашборде.
+  - job_name: vpn-platform-services
+    static_configs:
+      - targets: ["vpn-platform-billing-service:9090"]
+        labels:
+          service: billing
+      - targets: ["vpn-platform-user-subscription-service:9090"]
+        labels:
+          service: user-subscription
+      - targets: ["vpn-platform-vpn-orchestrator-service:9090"]
+        labels:
+          service: vpn-orchestrator
+      - targets: ["vpn-platform-crypto-billing-service:9090"]
+        labels:
+          service: crypto-billing
+      - targets: ["vpn-platform-tg-bot-gateway:9090"]
+        labels:
+          service: tg-bot-gateway

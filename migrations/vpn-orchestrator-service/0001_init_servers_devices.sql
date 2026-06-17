@@ -1,3 +1,14 @@
+-- vpn-orchestrator: серверы (ноды) и пул профилей (то, что видит пользователь).
+--
+-- ВАЖНО (идемпотентность): этот файл выполняется при каждом прогоне migrate.
+-- Демонстрационные INSERT-данные УБРАНЫ намеренно:
+--   1) колонка vless_url удаляется позже миграцией 0005_drop_dead_objects, поэтому
+--      демо-INSERT с vless_url ломал повторный прогон (column "vless_url" does not exist);
+--   2) реальные ноды и профили регистрируются через Admin API оркестратора
+--      (POST /admin/nodes, POST /admin/pool-items), фейковые строки не нужны.
+-- Таблицы создаются с vless_url для совместимости с историей миграций;
+-- 0005 затем приводит схему к актуальному виду.
+
 CREATE TABLE IF NOT EXISTS vpn_servers (
     id BIGSERIAL PRIMARY KEY,
     server_key TEXT NOT NULL UNIQUE,
@@ -20,7 +31,7 @@ CREATE TABLE IF NOT EXISTS vpn_pool_items (
     server_key TEXT NULL REFERENCES vpn_servers (server_key) ON DELETE SET NULL,
     country_code TEXT NOT NULL,
     title TEXT NOT NULL,
-    vless_url TEXT NOT NULL,
+    vless_url TEXT NOT NULL DEFAULT '',
     profile_type TEXT NOT NULL DEFAULT 'default',
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
     sort_order INTEGER NOT NULL DEFAULT 100,
@@ -32,31 +43,4 @@ CREATE INDEX IF NOT EXISTS idx_vpn_pool_items_enabled_sort ON vpn_pool_items (en
 CREATE INDEX IF NOT EXISTS idx_vpn_pool_items_country ON vpn_pool_items (country_code);
 CREATE INDEX IF NOT EXISTS idx_vpn_pool_items_profile_type ON vpn_pool_items (profile_type);
 
-INSERT INTO vpn_servers (server_key, country_code, title, public_host, node_id, enabled, max_users, weight)
-VALUES
-    ('lt-main-1', 'LT', 'Lithuania Main 1', 'replace-me.example.com', '', TRUE, 1000, 100)
-ON CONFLICT (server_key) DO NOTHING;
-
-INSERT INTO vpn_pool_items (item_key, server_key, country_code, title, vless_url, profile_type, enabled, sort_order)
-VALUES
-    (
-        'lt-main-1-default',
-        'lt-main-1',
-        'LT',
-        'Lithuania Main',
-        'vless://REPLACE_UUID@replace-me.example.com:443?encryption=none&security=tls&type=ws&host=replace-me.example.com&path=%2Fws&sni=replace-me.example.com#Lithuania-Main',
-        'default',
-        FALSE,
-        10
-    ),
-    (
-        'yt-filter-1',
-        NULL,
-        'NL',
-        'YouTube Filtered',
-        'vless://REPLACE_UUID@replace-me.example.com:443?encryption=none&security=tls&type=ws&host=replace-me.example.com&path=%2Fws&sni=replace-me.example.com#YouTube-Filtered',
-        'ad_filter',
-        FALSE,
-        90
-    )
-ON CONFLICT (item_key) DO NOTHING;
+-- Демо-данные намеренно не вставляются (см. комментарий вверху файла).
