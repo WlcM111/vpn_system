@@ -268,6 +268,8 @@ services:
       user-subscription-service:
         condition: service_started
     environment:
+      SUPPORT_EMAIL: ${SUPPORT_EMAIL:-}
+      SUPPORT_TELEGRAM: ${SUPPORT_TELEGRAM:-}
       HTTPS_PROXY: ${TG_HTTPS_PROXY:-}
       HTTP_PROXY: ${TG_HTTPS_PROXY:-}
       NO_PROXY: kafka,postgres,redis,localhost,127.0.0.1,billing-service,user-subscription-service,vpn-orchestrator-service,crypto-billing-service
