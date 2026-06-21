@@ -175,7 +175,9 @@ func (s *Service) HandleCreateSubscriptionCheckout(
 		Metadata:          record.Metadata,
 	}, idempotenceKey)
 	if err != nil {
-		return fmt.Errorf("create yookassa payment: %w", err)
+		// YooKassa недоступна по любой причине — уведомляем пользователя и
+		// прекращаем обработку без retry-шторма (см. notifyCardPaymentUnavailable).
+		return s.notifyCardPaymentUnavailable(ctx, cmd.TelegramID, err)
 	}
 
 	if err := s.repo.UpdatePaymentCreated(
@@ -267,7 +269,9 @@ func (s *Service) HandleBindCard(
 		Metadata:          record.Metadata,
 	}, idempotenceKey)
 	if err != nil {
-		return fmt.Errorf("create yookassa bind payment: %w", err)
+		// YooKassa недоступна по любой причине — уведомляем пользователя и
+		// прекращаем обработку без retry-шторма (см. notifyCardPaymentUnavailable).
+		return s.notifyCardPaymentUnavailable(ctx, cmd.TelegramID, err)
 	}
 
 	if err := s.repo.UpdatePaymentCreated(
@@ -1177,4 +1181,38 @@ func (s *Service) publishBillingEvent(ctx context.Context, event any) error {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// notifyCardPaymentUnavailable уведомляет пользователя о временной недоступности
+// оплаты картой и возвращает ошибку, обёрнутую в ErrSkip.
+//
+// Вызывается, когда обращение к YooKassa завершилось ошибкой по ЛЮБОЙ причине
+// (пустые креды, API недоступен, сеть, ошибка статуса). Возврат ErrSkip важен:
+// он предотвращает повторные попытки consumer'а (иначе пользователь получил бы
+// несколько одинаковых уведомлений). Команда уйдёт в DLT для аудита, а денег
+// у пользователя не списалось (платёж в YooKassa не создан).
+//
+// Когда YooKassa снова станет доступна, createYooKassaPayment начнёт возвращать
+// успех, и это уведомление само перестанет отправляться — без правок кода.
+func (s *Service) notifyCardPaymentUnavailable(ctx context.Context, telegramID int64, cause error) error {
+	slog.Error("billing: card payment unavailable, notifying user",
+		"telegram_id", telegramID, "err", cause)
+
+	const text = "💳 Оплата картой временно недоступна.\n\n" +
+		"Пожалуйста, попробуйте позже или воспользуйтесь другим способом оплаты."
+
+	if notifyErr := s.publishNotification(ctx, &kafkacontracts.TgNotification{
+		TelegramID: telegramID,
+		Message:    text,
+		Keyboard:   kafkacontracts.TgKeyboardBuyMenu,
+	}); notifyErr != nil {
+		// Если даже уведомление не удалось отправить — логируем, но всё равно
+		// возвращаем ErrSkip, чтобы не зациклить retry.
+		slog.Error("billing: failed to send card-unavailable notification",
+			"telegram_id", telegramID, "err", notifyErr)
+	}
+
+	// Оборачиваем в ErrSkip: errors.Is(result, commonkafka.ErrSkip) == true,
+	// поэтому consumer отправит сообщение в DLT без 20 повторов.
+	return fmt.Errorf("%w: card payment unavailable: %v", commonkafka.ErrSkip, cause)
 }

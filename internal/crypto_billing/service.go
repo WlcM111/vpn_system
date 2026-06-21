@@ -31,10 +31,17 @@ type Service struct {
 	repo     *Repository
 	client   *CryptoBotClient
 	producer *commonkafka.Producer
+	rates    *RatesCache // кэш курсов для динамического ценообразования (crypto-режим)
 }
 
 func NewService(cfg Config, repo *Repository, client *CryptoBotClient, producer *commonkafka.Producer) *Service {
 	return &Service{cfg: cfg, repo: repo, client: client, producer: producer}
+}
+
+// SetRatesCache подключает кэш курсов (вызывается из main после создания воркера).
+// Может быть nil — тогда crypto-режим использует статичные цены как fallback.
+func (s *Service) SetRatesCache(rc *RatesCache) {
+	s.rates = rc
 }
 
 // ============================================================================
@@ -58,15 +65,18 @@ func (s *Service) HandleCreateCheckout(ctx context.Context, cmd *kafkacontracts.
 		return fmt.Errorf("unsupported plan code: %s", cmd.PlanCode)
 	}
 
-	// Если бот не указал актив явно, используем дефолт сервиса.
-	asset := cmd.Asset
-	if asset == "" {
-		asset = s.cfg.DefaultAsset
+	// Определяем цену инвойса по выбранному режиму (crypto/fiat).
+	// pricing инкапсулирует: динамический расчёт из рублей по курсу, fallback
+	// на статичную цену, либо фиатную сумму для fiat-режима. См. pricing.go.
+	pricing, err := s.resolvePricing(plan, cmd.Asset)
+	if err != nil {
+		return err
 	}
-	amount, ok := plan.Prices[asset]
-	if !ok || amount == "" {
-		return fmt.Errorf("no price configured for plan=%s asset=%s", cmd.PlanCode, asset)
-	}
+	// Для совместимости с остальным кодом метода: asset/amount — то, что пишем в БД.
+	// crypto-режим: реальные крипто-значения; fiat-режим: рубли (RUB/200),
+	// webhook затем сверит фактические paid_asset/paid_amount.
+	asset := kafkacontracts.CryptoAsset(pricing.DBAsset)
+	amount := pricing.DBAmount
 
 	// order_id — наш собственный идентификатор инвойса; кладём его в payload CryptoBot,
 	// чтобы при необходимости найти инвойс по нему в API CryptoBot. CryptoBot ничего
@@ -115,16 +125,38 @@ func (s *Service) HandleCreateCheckout(ctx context.Context, cmd *kafkacontracts.
 	}
 
 	// ----- Внешний вызов CryptoBot API (вне транзакции) -----
-	inv, rawCreate, createErr := s.client.CreateInvoice(
-		ctx,
-		asset,
-		amount,
-		plan.Title,
-		orderID, // payload — вернётся в webhook'е
-		s.cfg.PaidBtnName,
-		s.cfg.PaidBtnURL,
-		s.cfg.InvoiceExpires,
+	// В fiat-режиме создаём инвойс в рублях (CryptoBot сам конвертирует в крипту
+	// по курсу на момент оплаты). В crypto-режиме — обычный крипто-инвойс с
+	// заранее посчитанной суммой.
+	var (
+		inv       *CryptoBotInvoice
+		rawCreate json.RawMessage
+		createErr error
 	)
+	if pricing.IsFiat {
+		inv, rawCreate, createErr = s.client.CreateInvoiceFiat(
+			ctx,
+			pricing.FiatCurrency,
+			pricing.FiatAmount,
+			s.cfg.AcceptedAssetsCSV(),
+			plan.Title,
+			orderID,
+			s.cfg.PaidBtnName,
+			s.cfg.PaidBtnURL,
+			s.cfg.InvoiceExpires,
+		)
+	} else {
+		inv, rawCreate, createErr = s.client.CreateInvoice(
+			ctx,
+			asset,
+			amount,
+			plan.Title,
+			orderID, // payload — вернётся в webhook'е
+			s.cfg.PaidBtnName,
+			s.cfg.PaidBtnURL,
+			s.cfg.InvoiceExpires,
+		)
+	}
 
 	// Если создание упало — фиксируем причину в БД и шлём пользователю сообщение.
 	if createErr != nil {
@@ -206,8 +238,6 @@ type CryptoBotWebhookUpdate struct {
 	Payload     json.RawMessage `json:"payload"`
 }
 
-// CryptoBotInvoicePayload — структура поля payload для update_type="invoice_paid".
-// "invoice_paid" — единственный тип update, который нам интересен в v1.
 type CryptoBotInvoicePayload struct {
 	InvoiceID  int64  `json:"invoice_id"`
 	Status     string `json:"status"`
@@ -217,6 +247,12 @@ type CryptoBotInvoicePayload struct {
 	Payload    string `json:"payload"` // совпадает с нашим order_id
 	PaidAt     string `json:"paid_at"`
 	PaidAnonym bool   `json:"paid_anonymously"`
+	// Поля фиат-инвойса (currency_type=fiat). При оплате CryptoBot заполняет
+	// фактически уплаченные крипто-значения и фиатную базу.
+	CurrencyType string `json:"currency_type"`
+	Fiat         string `json:"fiat"`
+	PaidAsset    string `json:"paid_asset"`
+	PaidAmount   string `json:"paid_amount"`
 }
 
 // ProcessWebhook — entry-point для HTTP-хендлера webhook'а. HMAC + URL-токен уже
@@ -295,15 +331,27 @@ func (s *Service) ProcessWebhook(ctx context.Context, raw []byte, fingerprint st
 			"invoice_id", invoiceIDStr, "order_id", inv.OrderID, "status", ip.Status)
 		return tx.Commit(ctx)
 	}
-	if ip.Asset != "" && !strings.EqualFold(ip.Asset, inv.Asset) {
-		slog.Error("crypto-billing webhook asset mismatch",
-			"invoice_id", invoiceIDStr, "expected", inv.Asset, "got", ip.Asset)
-		return tx.Commit(ctx)
-	}
-	if ip.Amount != "" && !amountsEqual(ip.Amount, inv.AmountValue) {
-		slog.Error("crypto-billing webhook amount mismatch",
-			"invoice_id", invoiceIDStr, "expected", inv.AmountValue, "got", ip.Amount)
-		return tx.Commit(ctx)
+	// Сверка суммы/актива. Для крипто-инвойса (currency_type != "fiat") сверяем
+	// строго, как и раньше: asset и amount в вебхуке должны совпасть с тем, что
+	// мы создавали. Для фиат-инвойса крипто-значения определяются только при
+	// оплате (paid_asset/paid_amount), а в БД у нас лежит фиат — поэтому строгую
+	// крипто-сверку пропускаем (целостность источника уже гарантирована HMAC).
+	isFiatInvoice := strings.EqualFold(ip.CurrencyType, "fiat") || ip.Fiat != "" || ip.PaidAsset != ""
+	if !isFiatInvoice {
+		if ip.Asset != "" && !strings.EqualFold(ip.Asset, inv.Asset) {
+			slog.Error("crypto-billing webhook asset mismatch",
+				"invoice_id", invoiceIDStr, "expected", inv.Asset, "got", ip.Asset)
+			return tx.Commit(ctx)
+		}
+		if ip.Amount != "" && !amountsEqual(ip.Amount, inv.AmountValue) {
+			slog.Error("crypto-billing webhook amount mismatch",
+				"invoice_id", invoiceIDStr, "expected", inv.AmountValue, "got", ip.Amount)
+			return tx.Commit(ctx)
+		}
+	} else {
+		slog.Info("crypto-billing fiat invoice paid",
+			"invoice_id", invoiceIDStr, "fiat", ip.Fiat, "fiat_amount", ip.Amount,
+			"paid_asset", ip.PaidAsset, "paid_amount", ip.PaidAmount)
 	}
 
 	// Шаг 3: пометить как paid. Если уже был paid — UPDATE не сработает (RowsAffected=0).

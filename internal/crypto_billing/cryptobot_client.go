@@ -74,6 +74,10 @@ type CryptoBotInvoice struct {
 	Description string `json:"description"`
 	CreatedAt   string `json:"created_at"`
 	Payload     string `json:"payload"`
+	// Поля фиат-инвойса (currency_type=fiat). До оплаты paid_* пустые.
+	CurrencyType   string   `json:"currency_type,omitempty"`
+	Fiat           string   `json:"fiat,omitempty"`
+	AcceptedAssets []string `json:"accepted_assets,omitempty"`
 }
 
 // apiResponse — общая обёртка ответа CryptoBot API: {ok, result, error}.
@@ -199,4 +203,146 @@ func PickPayURL(inv *CryptoBotInvoice) string {
 		return inv.WebAppPay
 	}
 	return inv.PayURL
+}
+
+// ----------------------------------------------------------------------------
+// 1. Курсы валют (getExchangeRates)
+// ----------------------------------------------------------------------------
+
+// ExchangeRate — один элемент ответа getExchangeRates.
+// Пример: {is_valid:true, source:"TON", target:"RUB", rate:"135.50"}.
+type ExchangeRate struct {
+	IsValid bool   `json:"is_valid"`
+	Source  string `json:"source"`
+	Target  string `json:"target"`
+	Rate    string `json:"rate"`
+}
+
+// GetExchangeRates вызывает CryptoBot getExchangeRates и возвращает список курсов.
+// Метод не требует параметров. Используется RatesWorker'ом для получения курсов
+// крипты к рублю (target=RUB).
+func (c *CryptoBotClient) GetExchangeRates(ctx context.Context) ([]ExchangeRate, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.apiBase+"/getExchangeRates", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Crypto-Pay-API-Token", c.apiToken)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("cryptobot getExchangeRates http: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+
+	var parsed apiResponse
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, fmt.Errorf("cryptobot getExchangeRates decode: %w (body=%s)", err, string(raw))
+	}
+	if !parsed.OK {
+		errName, errCode := "", 0
+		if parsed.Error != nil {
+			errName = parsed.Error.Name
+			errCode = parsed.Error.Code
+		}
+		return nil, fmt.Errorf("cryptobot getExchangeRates failed code=%d name=%s", errCode, errName)
+	}
+
+	var rates []ExchangeRate
+	if err := json.Unmarshal(parsed.Result, &rates); err != nil {
+		return nil, fmt.Errorf("cryptobot decode exchange rates: %w", err)
+	}
+	return rates, nil
+}
+
+// ----------------------------------------------------------------------------
+// 2. Фиат-инвойс (createInvoice с currency_type=fiat)
+// ----------------------------------------------------------------------------
+
+// createInvoiceFiatRequest — тело запроса для фиат-инвойса.
+// CryptoBot сам конвертирует фиат в крипту по курсу на момент оплаты.
+type createInvoiceFiatRequest struct {
+	CurrencyType   string `json:"currency_type"` // всегда "fiat"
+	Fiat           string `json:"fiat"`          // напр. "RUB"
+	Amount         string `json:"amount"`        // сумма в фиате, напр. "200"
+	AcceptedAssets string `json:"accepted_assets,omitempty"`
+	Description    string `json:"description,omitempty"`
+	PaidBtnName    string `json:"paid_btn_name,omitempty"`
+	PaidBtnURL     string `json:"paid_btn_url,omitempty"`
+	Payload        string `json:"payload,omitempty"`
+	ExpiresIn      int    `json:"expires_in,omitempty"`
+	AllowComments  bool   `json:"allow_comments"`
+}
+
+// CreateInvoiceFiat создаёт инвойс в фиатной валюте (например, рубли).
+// CryptoBot принимает оплату в одной из accepted_assets, конвертируя по своему
+// курсу на момент оплаты. Это максимально точный способ держать рублёвую цену.
+//
+//	fiat            — код фиата ("RUB").
+//	amount          — сумма в фиате ("200").
+//	acceptedAssets  — список крипто-активов через запятую ("USDT,TON"); пусто = все.
+//
+// Возвращает разобранный инвойс и сырой JSON (для аудита в БД).
+func (c *CryptoBotClient) CreateInvoiceFiat(
+	ctx context.Context,
+	fiat, amount, acceptedAssets, description, payload, paidBtnName, paidBtnURL string,
+	expiresIn time.Duration,
+) (*CryptoBotInvoice, json.RawMessage, error) {
+	body, err := json.Marshal(&createInvoiceFiatRequest{
+		CurrencyType:   "fiat",
+		Fiat:           fiat,
+		Amount:         amount,
+		AcceptedAssets: acceptedAssets,
+		Description:    description,
+		PaidBtnName:    paidBtnName,
+		PaidBtnURL:     paidBtnURL,
+		Payload:        payload,
+		ExpiresIn:      int(expiresIn.Seconds()),
+		AllowComments:  false,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal createInvoice(fiat): %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiBase+"/createInvoice", bytes.NewReader(body))
+	if err != nil {
+		return nil, nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Crypto-Pay-API-Token", c.apiToken)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("cryptobot createInvoice(fiat) http: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, raw, err
+	}
+
+	var parsed apiResponse
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, raw, fmt.Errorf("cryptobot createInvoice(fiat) decode: %w (body=%s)", err, string(raw))
+	}
+	if !parsed.OK {
+		errName, errCode := "", 0
+		if parsed.Error != nil {
+			errName = parsed.Error.Name
+			errCode = parsed.Error.Code
+		}
+		return nil, raw, fmt.Errorf("cryptobot createInvoice(fiat) failed http=%d code=%d name=%s body=%s",
+			resp.StatusCode, errCode, errName, string(raw))
+	}
+
+	var inv CryptoBotInvoice
+	if err := json.Unmarshal(parsed.Result, &inv); err != nil {
+		return nil, raw, fmt.Errorf("cryptobot decode invoice(fiat): %w", err)
+	}
+	return &inv, raw, nil
 }

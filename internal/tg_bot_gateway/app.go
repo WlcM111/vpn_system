@@ -171,6 +171,10 @@ func (a *App) Run() error {
 
 	go a.cleanupChatLocks(a.ctx)
 
+	// Внутренний HTTP-эндпоинт массовой рассылки (только 127.0.0.1, по токену).
+	// Если BROADCAST_TOKEN не задан — эндпоинт не поднимается.
+	go a.startBroadcastServer(a.ctx)
+
 	if webhookURL := strings.TrimSpace(os.Getenv("TG_WEBHOOK_URL")); webhookURL != "" {
 		return a.runWebhookMode(webhookURL)
 	}

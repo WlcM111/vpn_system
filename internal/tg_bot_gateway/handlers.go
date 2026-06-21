@@ -121,7 +121,10 @@ func (a *App) handleMainMenuChoice(ctx context.Context, chatID int64, state *Cha
 		a.handleGetConfig(ctx, chatID, state)
 
 	default:
-		a.sendText(chatID, "Не понимаю команду. Используй кнопки в меню 👇", mainMenuKeyboard())
+		// Любое непонятное сообщение — возвращаем пользователя в главное меню.
+		state.Step = StepMainMenu
+		_ = a.stateStore.Set(ctx, chatID, state)
+		a.sendMainMenu(chatID, true)
 	}
 }
 

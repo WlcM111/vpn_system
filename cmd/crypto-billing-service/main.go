@@ -75,6 +75,15 @@ func main() {
 	client := crypto_billing.NewCryptoBotClient(cfg.APIBase, cfg.APIToken)
 	svc := crypto_billing.NewService(cfg, repo, client, producer)
 
+	// Динамическое ценообразование: в crypto-режиме поднимаем кэш курсов и
+	// фоновый воркер, который обновляет его из CryptoBot getExchangeRates.
+	// В fiat-режиме воркер не нужен (конвертация на стороне CryptoBot).
+	if cfg.PricingMode == crypto_billing.PricingModeCrypto {
+		ratesCache := crypto_billing.NewRatesCache()
+		svc.SetRatesCache(ratesCache)
+		go crypto_billing.RunRatesWorker(ctx, client, ratesCache, cfg.RatesInterval)
+	}
+
 	// HTTP-роутер. Бизнес-эндпоинты регистрирует HTTPHandlers, а livez/readyz —
 	// общий пакет httpserver. readyz пингует БД, чтобы Kubernetes/compose могли
 	// корректно определять готовность сервиса.
