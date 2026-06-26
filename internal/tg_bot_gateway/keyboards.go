@@ -1,6 +1,11 @@
 package tg_bot_gateway
 
-import tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+import (
+	"os"
+	"strings"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+)
 
 const (
 	btnBuySubscription = "💳 Купить подписку"
@@ -11,18 +16,72 @@ const (
 	btnSupport         = "🆘 Поддержка"
 	btnMainMenu        = "🏠 Главное меню"
 
+	// Новый раздел «Описание услуг» и кнопки документов.
+	btnServicesInfo = "📄 Описание услуг"
+	btnDocUser      = "📘 Пользовательское соглашение"
+	btnDocOffer     = "📗 Публичная оферта"
+	btnDocPrivacy   = "📕 Политика конфиденциальности"
+
+	// Крипто-кнопки временно скрыты из меню. Константы оставлены — обработчики
+	// в handlers.go продолжают существовать, чтобы при возврате крипты вернуть
+	// кнопки в buyMenuKeyboard без восстановления логики.
 	btnPlanMonthlyCrypto   = "🪙 Крипта 30 дней"
 	btnPlanQuarterlyCrypto = "🪙 Крипта 90 дней"
 
-	btnPlanMonthly   = "💳 Подписка 30 дней"
-	btnPlanQuarterly = "💳 Подписка 90 дней"
+	// Кнопки тарифов (оплата картой). Цена подставляется динамически — см.
+	// planButtonLabel ниже. Базовые подписи без цены оставлены как fallback и
+	// для обратной совместимости, но в меню используются версии с ценой.
+	btnPlanMonthly    = "💳 Подписка 30 дней"
+	btnPlanQuarterly  = "💳 Подписка 90 дней"
+	btnPlanSemiannual = "💳 Подписка 180 дней"
+	btnPlanAnnual     = "💳 Подписка 360 дней"
 
+	// Привязка/отвязка карты временно скрыты из меню (константы и обработчики
+	// сохранены для будущего возврата).
 	btnBindCard   = "🔗 Привязать карту"
 	btnUnbindCard = "🔓 Отвязать карту"
-	btnBack       = "⬅️ Назад"
+
+	btnBack = "⬅️ Назад"
 
 	btnGetConfig = "🔑 Получить ключи"
 )
+
+// ---------------------------------------------------------------------------
+// Цены тарифов (в рублях). Берутся из .env, чтобы менять без пересборки.
+// Значения по умолчанию соответствуют согласованным ценам.
+// ---------------------------------------------------------------------------
+
+// planPriceRUB возвращает цену тарифа в рублях (строкой) по env-переменной.
+func planPriceRUB(envKey, fallback string) string {
+	v := strings.TrimSpace(os.Getenv(envKey))
+	if v == "" {
+		return fallback
+	}
+	return v
+}
+
+// Цены по тарифам (читаются при каждом построении клавиатуры — это дёшево).
+func priceMonthly() string    { return planPriceRUB("PLAN_MONTHLY_PRICE_RUB", "89") }
+func priceQuarterly() string  { return planPriceRUB("PLAN_QUARTERLY_PRICE_RUB", "249") }
+func priceSemiannual() string { return planPriceRUB("PLAN_SEMIANNUAL_PRICE_RUB", "439") }
+func priceAnnual() string     { return planPriceRUB("PLAN_ANNUAL_PRICE_RUB", "799") }
+
+// planButtonLabel формирует подпись кнопки тарифа с ценой:
+//
+//	«💳 Подписка 30 дней — 89 ₽»
+func planButtonLabel(base, priceRUB string) string {
+	return base + " — " + priceRUB + " ₽"
+}
+
+// Готовые подписи кнопок тарифов с ценой (используются в меню и для роутинга).
+func labelMonthly() string    { return planButtonLabel(btnPlanMonthly, priceMonthly()) }
+func labelQuarterly() string  { return planButtonLabel(btnPlanQuarterly, priceQuarterly()) }
+func labelSemiannual() string { return planButtonLabel(btnPlanSemiannual, priceSemiannual()) }
+func labelAnnual() string     { return planButtonLabel(btnPlanAnnual, priceAnnual()) }
+
+// ---------------------------------------------------------------------------
+// Клавиатуры.
+// ---------------------------------------------------------------------------
 
 func mainMenuKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	return tgbotapi.NewReplyKeyboard(
@@ -38,22 +97,42 @@ func mainMenuKeyboard() tgbotapi.ReplyKeyboardMarkup {
 			tgbotapi.NewKeyboardButton(btnDownloadVPN),
 			tgbotapi.NewKeyboardButton(btnSupport),
 		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(btnServicesInfo),
+		),
 	)
 }
 
+// buyMenuKeyboard — меню тарифов. Крипта и привязка карты скрыты; четыре тарифа
+// картой с ценами, по две кнопки в ряд.
 func buyMenuKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	return tgbotapi.NewReplyKeyboard(
 		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton(btnPlanMonthly),
-			tgbotapi.NewKeyboardButton(btnPlanQuarterly),
+			tgbotapi.NewKeyboardButton(labelMonthly()),
+			tgbotapi.NewKeyboardButton(labelQuarterly()),
 		),
 		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton(btnPlanMonthlyCrypto),
-			tgbotapi.NewKeyboardButton(btnPlanQuarterlyCrypto),
+			tgbotapi.NewKeyboardButton(labelSemiannual()),
+			tgbotapi.NewKeyboardButton(labelAnnual()),
 		),
 		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton(btnBindCard),
-			tgbotapi.NewKeyboardButton(btnUnbindCard),
+			tgbotapi.NewKeyboardButton(btnBack),
+			tgbotapi.NewKeyboardButton(btnMainMenu),
+		),
+	)
+}
+
+// servicesMenuKeyboard — подменю «Описание услуг» с тремя документами.
+func servicesMenuKeyboard() tgbotapi.ReplyKeyboardMarkup {
+	return tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(btnDocUser),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(btnDocOffer),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(btnDocPrivacy),
 		),
 		tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton(btnBack),

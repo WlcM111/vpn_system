@@ -32,10 +32,11 @@ type App struct {
 	chatLocks         sync.Map
 	stopOnce          sync.Once
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	pgPool *pgxpool.Pool
-	stopCh chan struct{}
+	ctx       context.Context
+	cancel    context.CancelFunc
+	pgPool    *pgxpool.Pool
+	stopCh    chan struct{}
+	documents *documentsStore
 }
 
 type chatLock struct {
@@ -157,6 +158,7 @@ func NewApp() (*App, error) {
 		ctx:               appCtx,
 		cancel:            appCancel,
 		pgPool:            pgPool,
+		documents:         newDocumentsStore(),
 	}, nil
 }
 
@@ -174,6 +176,13 @@ func (a *App) Run() error {
 	// Внутренний HTTP-эндпоинт массовой рассылки (только 127.0.0.1, по токену).
 	// Если BROADCAST_TOKEN не задан — эндпоинт не поднимается.
 	go a.startBroadcastServer(a.ctx)
+
+	// Публикуем документы (соглашение, оферта, политика) в Telegraph при старте.
+	// В фоне, чтобы не задерживать запуск бота. Если не удастся — меню документов
+	// сообщит о временной недоступности.
+	if a.documents != nil {
+		go a.documents.publishAll(a.ctx, newTelegraphClient())
+	}
 
 	if webhookURL := strings.TrimSpace(os.Getenv("TG_WEBHOOK_URL")); webhookURL != "" {
 		return a.runWebhookMode(webhookURL)

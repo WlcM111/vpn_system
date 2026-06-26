@@ -118,6 +118,19 @@ func main() {
 
 	go outbox.RunPublisher(ctx, pool, producer, "user-subscription-service")
 
+	// Воркер напоминаний об истечении подписки (7/3/1 день + окончание для
+	// платных; 1 день + окончание для триала). Шлёт через outbox, поэтому нужен
+	// producer (Kafka). Интервал проверки — REMINDER_CHECK_INTERVAL (по умолч. 1h).
+	if producer != nil {
+		reminderInterval := time.Hour
+		if raw := strings.TrimSpace(os.Getenv("REMINDER_CHECK_INTERVAL")); raw != "" {
+			if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+				reminderInterval = d
+			}
+		}
+		go user_subscription.RunExpirationReminderWorker(ctx, svc, reminderInterval)
+	}
+
 	<-stop
 	log.Println("[user-subscription] shutting down...")
 

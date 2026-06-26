@@ -58,6 +58,8 @@ func (a *App) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 	switch state.Step {
 	case StepBuyMenu:
 		a.handleBuyMenuChoice(ctx, chatID, state, text)
+	case StepServicesMenu:
+		a.handleServicesMenuChoice(ctx, chatID, state, text)
 	default:
 		a.handleMainMenuChoice(ctx, chatID, state, text)
 	}
@@ -120,6 +122,9 @@ func (a *App) handleMainMenuChoice(ctx context.Context, chatID int64, state *Cha
 	case btnGetConfig:
 		a.handleGetConfig(ctx, chatID, state)
 
+	case btnServicesInfo:
+		a.handleServicesInfo(ctx, chatID, state)
+
 	default:
 		// Любое непонятное сообщение — возвращаем пользователя в главное меню.
 		state.Step = StepMainMenu
@@ -130,24 +135,39 @@ func (a *App) handleMainMenuChoice(ctx context.Context, chatID int64, state *Cha
 
 func (a *App) handleBuyMenuChoice(ctx context.Context, chatID int64, state *ChatState, text string) {
 	switch text {
-	case btnPlanMonthly:
-		a.handleCreateCheckout(ctx, chatID, state, kafkacontracts.PlanCodeMonthly, 30)
-	case btnPlanQuarterly:
-		a.handleCreateCheckout(ctx, chatID, state, kafkacontracts.PlanCodeQuarterly, 90)
-	case btnPlanMonthlyCrypto:
-		a.handleCreateCryptoCheckout(ctx, chatID, state, kafkacontracts.PlanCodeMonthly)
-	case btnPlanQuarterlyCrypto:
-		a.handleCreateCryptoCheckout(ctx, chatID, state, kafkacontracts.PlanCodeQuarterly)
-	case btnBindCard:
-		a.handleBindCard(ctx, chatID, state)
-	case btnUnbindCard:
-		a.handleUnbindCard(ctx, chatID, state)
+	// Тарифы оплачиваются картой. Подписи кнопок содержат цену (labelMonthly и т.п.),
+	// поэтому сравниваем именно с ними. Крипта и привязка карты временно скрыты.
+	case labelMonthly():
+		a.handleCardCheckoutFallback(ctx, chatID, state, "Подписка 30 дней", 30, priceMonthly())
+	case labelQuarterly():
+		a.handleCardCheckoutFallback(ctx, chatID, state, "Подписка 90 дней", 90, priceQuarterly())
+	case labelSemiannual():
+		a.handleCardCheckoutFallback(ctx, chatID, state, "Подписка 180 дней", 180, priceSemiannual())
+	case labelAnnual():
+		a.handleCardCheckoutFallback(ctx, chatID, state, "Подписка 360 дней", 360, priceAnnual())
 	case btnBack:
 		state.Step = StepMainMenu
 		_ = a.stateStore.Set(ctx, chatID, state)
 		a.sendMainMenu(chatID, true)
 	default:
-		a.sendText(chatID, "Выбери действие из меню оплаты 👇", buyMenuKeyboard())
+		a.sendText(chatID, "Выбери тариф 👇", buyMenuKeyboard())
+	}
+}
+
+// handleCardCheckoutFallback показывает пользователю детали заказа и пример-ссылку
+// на оплату картой, пока YooKassa недоступна. Команда в billing НЕ публикуется
+// (чтобы не было «висящих» ожиданий) — это временная заглушка. Функционал оплаты
+// картой (handleCreateCheckout) сохранён и не удалён; вернуть его — заменив тело
+// этого метода обратно на вызов handleCreateCheckout.
+func (a *App) handleCardCheckoutFallback(ctx context.Context, chatID int64, state *ChatState, title string, days int, priceRUB string) {
+	state.Step = StepBuyMenu
+	_ = a.stateStore.Set(ctx, chatID, state)
+
+	msg := tgbotapi.NewMessage(chatID, cardPaymentFallbackText(title, days, priceRUB))
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = buyMenuKeyboard()
+	if _, err := a.bot.Send(msg); err != nil {
+		log.Printf("[tg-bot] failed to send card fallback: %v", err)
 	}
 }
 

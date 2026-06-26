@@ -77,11 +77,19 @@ func NewService(repo *Repository, producer *commonkafka.Producer) *Service {
 
 	monthlyPrice := strings.TrimSpace(os.Getenv("PLAN_MONTHLY_PRICE_RUB"))
 	if monthlyPrice == "" {
-		monthlyPrice = "299.00"
+		monthlyPrice = "89.00"
 	}
 	quarterlyPrice := strings.TrimSpace(os.Getenv("PLAN_QUARTERLY_PRICE_RUB"))
 	if quarterlyPrice == "" {
-		quarterlyPrice = "799.00"
+		quarterlyPrice = "249.00"
+	}
+	semiannualPrice := strings.TrimSpace(os.Getenv("PLAN_SEMIANNUAL_PRICE_RUB"))
+	if semiannualPrice == "" {
+		semiannualPrice = "439.00"
+	}
+	annualPrice := strings.TrimSpace(os.Getenv("PLAN_ANNUAL_PRICE_RUB"))
+	if annualPrice == "" {
+		annualPrice = "799.00"
 	}
 
 	return &Service{
@@ -106,6 +114,20 @@ func NewService(repo *Repository, producer *commonkafka.Producer) *Service {
 				AmountValue:  quarterlyPrice,
 				Currency:     "RUB",
 				DurationDays: 90,
+			},
+			kafkacontracts.PlanCodeSemiannual: {
+				Code:         kafkacontracts.PlanCodeSemiannual,
+				Title:        "Подписка на сервис защищённого соединения (180 дней)",
+				AmountValue:  semiannualPrice,
+				Currency:     "RUB",
+				DurationDays: 180,
+			},
+			kafkacontracts.PlanCodeAnnual: {
+				Code:         kafkacontracts.PlanCodeAnnual,
+				Title:        "Подписка на сервис защищённого соединения (360 дней)",
+				AmountValue:  annualPrice,
+				Currency:     "RUB",
+				DurationDays: 360,
 			},
 		},
 	}
@@ -1195,24 +1217,26 @@ func (s *Service) publishBillingEvent(ctx context.Context, event any) error {
 // Когда YooKassa снова станет доступна, createYooKassaPayment начнёт возвращать
 // успех, и это уведомление само перестанет отправляться — без правок кода.
 func (s *Service) notifyCardPaymentUnavailable(ctx context.Context, telegramID int64, cause error) error {
-	slog.Error("billing: card payment unavailable, notifying user",
+	slog.Error("billing: card payment unavailable",
 		"telegram_id", telegramID, "err", cause)
 
-	const text = "💳 Оплата картой временно недоступна.\n\n" +
-		"Пожалуйста, попробуйте позже или воспользуйтесь другим способом оплаты."
+	// ВРЕМЕННО ОТКЛЮЧЕНО: уведомление пользователю о недоступности карты теперь
+	// показывает сам бот (с деталями тарифа и фолбэк-ссылкой). Чтобы вернуть
+	// отправку из billing — раскомментируй блок ниже.
+	//
+	// const text = "💳 Оплата картой временно недоступна.\n\n" +
+	// 	"Пожалуйста, попробуйте позже или воспользуйтесь другим способом оплаты."
+	//
+	// if notifyErr := s.publishNotification(ctx, &kafkacontracts.TgNotification{
+	// 	TelegramID: telegramID,
+	// 	Message:    text,
+	// 	Keyboard:   kafkacontracts.TgKeyboardBuyMenu,
+	// }); notifyErr != nil {
+	// 	slog.Error("billing: failed to send card-unavailable notification",
+	// 		"telegram_id", telegramID, "err", notifyErr)
+	// }
 
-	if notifyErr := s.publishNotification(ctx, &kafkacontracts.TgNotification{
-		TelegramID: telegramID,
-		Message:    text,
-		Keyboard:   kafkacontracts.TgKeyboardBuyMenu,
-	}); notifyErr != nil {
-		// Если даже уведомление не удалось отправить — логируем, но всё равно
-		// возвращаем ErrSkip, чтобы не зациклить retry.
-		slog.Error("billing: failed to send card-unavailable notification",
-			"telegram_id", telegramID, "err", notifyErr)
-	}
-
-	// Оборачиваем в ErrSkip: errors.Is(result, commonkafka.ErrSkip) == true,
-	// поэтому consumer отправит сообщение в DLT без 20 повторов.
+	// Возврат ErrSkip сохранён: если billing-команда всё же попадёт в очередь,
+	// она не будет ретраиться 20 раз, а уйдёт в DLT.
 	return fmt.Errorf("%w: card payment unavailable: %v", commonkafka.ErrSkip, cause)
 }

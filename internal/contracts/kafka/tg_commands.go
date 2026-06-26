@@ -3,8 +3,10 @@ package kafka
 type PlanCode string
 
 const (
-	PlanCodeMonthly   PlanCode = "monthly_30d"
-	PlanCodeQuarterly PlanCode = "quarterly_90d"
+	PlanCodeMonthly    PlanCode = "monthly_30d"
+	PlanCodeQuarterly  PlanCode = "quarterly_90d"
+	PlanCodeSemiannual PlanCode = "semiannual_180d"
+	PlanCodeAnnual     PlanCode = "annual_360d"
 )
 
 type BillingCommandType string

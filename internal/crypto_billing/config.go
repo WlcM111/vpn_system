@@ -101,8 +101,10 @@ func LoadConfigFromEnv() (Config, error) {
 	}
 
 	// Базовые цены в рублях (главный источник истины).
-	monthlyRUB := parseFloatOr("CRYPTO_PLAN_MONTHLY_RUB", 200)
-	quarterlyRUB := parseFloatOr("CRYPTO_PLAN_QUARTERLY_RUB", 500)
+	monthlyRUB := parseFloatOr("CRYPTO_PLAN_MONTHLY_RUB", 89)
+	quarterlyRUB := parseFloatOr("CRYPTO_PLAN_QUARTERLY_RUB", 249)
+	semiannualRUB := parseFloatOr("CRYPTO_PLAN_SEMIANNUAL_RUB", 439)
+	annualRUB := parseFloatOr("CRYPTO_PLAN_ANNUAL_RUB", 799)
 
 	cfg.Plans = map[kafkacontracts.PlanCode]Plan{
 		kafkacontracts.PlanCodeMonthly: {
@@ -127,6 +129,26 @@ func LoadConfigFromEnv() (Config, error) {
 				kafkacontracts.CryptoAssetTON:  envOr("CRYPTO_PLAN_QUARTERLY_TON", "3.1"),
 				kafkacontracts.CryptoAssetBTC:  envOr("CRYPTO_PLAN_QUARTERLY_BTC", "0.00021"),
 				kafkacontracts.CryptoAssetETH:  envOr("CRYPTO_PLAN_QUARTERLY_ETH", "0.004"),
+			},
+		},
+		kafkacontracts.PlanCodeSemiannual: {
+			Code:         kafkacontracts.PlanCodeSemiannual,
+			Title:        "Подписка на сервис защищённого соединения (180 дней)",
+			DurationDays: 180,
+			PriceRUB:     semiannualRUB,
+			StaticPrices: map[kafkacontracts.CryptoAsset]string{
+				kafkacontracts.CryptoAssetUSDT: envOr("CRYPTO_PLAN_SEMIANNUAL_USDT", "9.00"),
+				kafkacontracts.CryptoAssetTON:  envOr("CRYPTO_PLAN_SEMIANNUAL_TON", "5.5"),
+			},
+		},
+		kafkacontracts.PlanCodeAnnual: {
+			Code:         kafkacontracts.PlanCodeAnnual,
+			Title:        "Подписка на сервис защищённого соединения (360 дней)",
+			DurationDays: 360,
+			PriceRUB:     annualRUB,
+			StaticPrices: map[kafkacontracts.CryptoAsset]string{
+				kafkacontracts.CryptoAssetUSDT: envOr("CRYPTO_PLAN_ANNUAL_USDT", "16.00"),
+				kafkacontracts.CryptoAssetTON:  envOr("CRYPTO_PLAN_ANNUAL_TON", "10.0"),
 			},
 		},
 	}
