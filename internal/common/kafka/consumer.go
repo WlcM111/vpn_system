@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"time"
 
+	commonmetrics "vpn-platform/internal/common/metrics"
+
 	kafkago "github.com/segmentio/kafka-go"
 )
 
@@ -57,6 +59,7 @@ func RunConsumerWithDLT(ctx context.Context, reader *kafkago.Reader, serviceName
 		err = handle(ctx, msg)
 		if err != nil {
 			if errors.Is(err, ErrSkip) {
+				commonmetrics.KafkaConsumedTotal.WithLabelValues(msg.Topic, "skip").Inc()
 				_ = publishDLT(ctx, dltProducer, dltTopic, msg, serviceName, err)
 				delete(attempts, attemptKey)
 				if commitErr := reader.CommitMessages(ctx, msg); commitErr != nil {
@@ -77,6 +80,7 @@ func RunConsumerWithDLT(ctx context.Context, reader *kafkago.Reader, serviceName
 			)
 
 			if attempts[attemptKey] >= 20 && dltProducer != nil && dltTopic != "" {
+				commonmetrics.KafkaConsumedTotal.WithLabelValues(msg.Topic, "dlt").Inc()
 				_ = publishDLT(ctx, dltProducer, dltTopic, msg, serviceName, err)
 				delete(attempts, attemptKey)
 				if commitErr := reader.CommitMessages(ctx, msg); commitErr != nil {
@@ -90,6 +94,7 @@ func RunConsumerWithDLT(ctx context.Context, reader *kafkago.Reader, serviceName
 		}
 
 		delete(attempts, attemptKey)
+		commonmetrics.KafkaConsumedTotal.WithLabelValues(msg.Topic, "ok").Inc()
 		if err := reader.CommitMessages(ctx, msg); err != nil {
 			return err
 		}

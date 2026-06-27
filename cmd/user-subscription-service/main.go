@@ -86,7 +86,7 @@ func main() {
 
 	httpServer := &http.Server{
 		Addr:              httpAddr,
-		Handler:           mux,
+		Handler:           commonmetrics.HTTPMetricsMiddleware(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

@@ -70,6 +70,9 @@ func (c *MetricsCollector) collectOnce(ctx context.Context) {
 		// крипто-инвойсы не критичны для общей картины — только лог
 		slog.Warn("[metrics] collect crypto invoices failed", "err", err)
 	}
+	if err := c.collectCryptoRevenue(cctx); err != nil {
+		slog.Warn("[metrics] collect crypto revenue failed", "err", err)
+	}
 
 	commonmetrics.MetricsCollectorLastRun.Set(float64(time.Now().Unix()))
 }
@@ -231,5 +234,33 @@ func (c *MetricsCollector) collectCryptoInvoices(ctx context.Context) error {
 		}
 		commonmetrics.CryptoInvoicesByStatus.WithLabelValues(status).Set(cnt)
 	}
+	return rows.Err()
+}
+
+// collectCryptoRevenue — суммы оплаченных крипто-инвойсов по активу + общее число.
+func (c *MetricsCollector) collectCryptoRevenue(ctx context.Context) error {
+	rows, err := c.pool.Query(ctx, `
+		SELECT asset, COALESCE(SUM(amount_value::numeric), 0), COUNT(*)
+		FROM crypto_invoices
+		WHERE status = 'paid'
+		GROUP BY asset
+	`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	commonmetrics.CryptoRevenueTotal.Reset()
+	var paidTotal float64
+	for rows.Next() {
+		var asset string
+		var sum, cnt float64
+		if err := rows.Scan(&asset, &sum, &cnt); err != nil {
+			return err
+		}
+		commonmetrics.CryptoRevenueTotal.WithLabelValues(asset).Set(sum)
+		paidTotal += cnt
+	}
+	commonmetrics.CryptoPaidCount.Set(paidTotal)
 	return rows.Err()
 }

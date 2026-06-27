@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -116,6 +117,18 @@ var (
 		Help: "Crypto invoices by status.",
 	}, []string{"status"})
 
+	// Выручка по оплаченным крипто-инвойсам, нарастающим итогом, по активу.
+	CryptoRevenueTotal = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_crypto_revenue_total",
+		Help: "Sum of paid crypto invoice amounts by asset.",
+	}, []string{"asset"})
+
+	// Количество оплаченных инвойсов (нарастающим итогом).
+	CryptoPaidCount = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "vpn_platform_crypto_paid_count",
+		Help: "Number of paid crypto invoices.",
+	})
+
 	// Трафик ноды в байтах (накопительный). ЗАГЛУШКА на этапе MVP:
 	// источник — Xray Stats API на ноде, который node-agent должен публиковать.
 	// Пока метрика регистрируется, но не наполняется (см. README по мониторингу).
@@ -176,4 +189,49 @@ func StartServer(ctx context.Context, defaultAddr string) {
 			slog.Error("metrics server stopped", "err", err)
 		}
 	}()
+}
+
+// statusRecorder перехватывает HTTP-статус ответа для метрики.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+// HTTPMetricsMiddleware оборачивает handler и инкрементирует HTTPRequestsTotal
+// по маршруту, методу и статусу. Служебные эндпоинты (/livez, /readyz, /metrics)
+// не учитываются, чтобы не зашумлять метрику.
+func HTTPMetricsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/livez", "/readyz", "/metrics":
+			next.ServeHTTP(w, r)
+			return
+		}
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		HTTPRequestsTotal.WithLabelValues(
+			routeLabel(r.URL.Path),
+			r.Method,
+			strconv.Itoa(rec.status),
+		).Inc()
+	})
+}
+
+// routeLabel огрубляет путь до стабильного маршрута, чтобы не плодить
+// бесконечные значения лейбла из токенов/ID (например /sub/<token> → /sub).
+func routeLabel(path string) string {
+	for _, prefix := range []string{"/sub/", "/s/", "/cdn/", "/admin/", "/webhooks/", "/internal/"} {
+		if strings.HasPrefix(path, prefix) {
+			return strings.TrimRight(prefix, "/")
+		}
+	}
+	if path == "" {
+		return "/"
+	}
+	return path
 }

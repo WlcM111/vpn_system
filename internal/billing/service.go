@@ -16,6 +16,7 @@ import (
 	"time"
 
 	commonkafka "vpn-platform/internal/common/kafka"
+	commonmetrics "vpn-platform/internal/common/metrics"
 	"vpn-platform/internal/common/outbox"
 	kafkacontracts "vpn-platform/internal/contracts/kafka"
 
@@ -442,6 +443,7 @@ func (s *Service) handlePaymentSucceeded(
 	if record == nil || n == nil {
 		return fmt.Errorf("nil payment success data")
 	}
+	commonmetrics.BillingPaymentsTotal.WithLabelValues("succeeded").Inc()
 
 	switch record.CheckoutType {
 	case string(kafkacontracts.BillingCheckoutTypeSubscription):
@@ -627,6 +629,7 @@ func (s *Service) handleBindCardPaymentSucceeded(ctx context.Context, record *Pa
 }
 
 func (s *Service) handlePaymentCanceled(ctx context.Context, record *PaymentRecord, n *yooKassaWebhookNotification) error {
+	commonmetrics.BillingPaymentsTotal.WithLabelValues("canceled").Inc()
 	chargeSource := billingChargeSourceFromMetadata(record.Metadata)
 	attemptNo := intFromMetadata(record.Metadata, "attempt_no")
 	reason := firstNotEmpty(n.Object.CancellationDetails.Reason, "payment_canceled")

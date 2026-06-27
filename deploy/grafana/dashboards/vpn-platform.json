@@ -1,792 +1,1596 @@
 {
-    "annotations": {
-      "list": [
-        {
-          "builtIn": 1,
-          "datasource": { "type": "grafana", "uid": "-- Grafana --" },
-          "enable": true,
-          "hide": true,
-          "iconColor": "rgba(0, 211, 255, 1)",
-          "name": "Annotations & Alerts",
-          "type": "dashboard"
-        }
-      ]
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "liveNow": true,
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": [
+    "vpn-platform"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "VPN Platform — Обзор",
+  "uid": "vpn-platform-overview",
+  "version": 1,
+  "panels": [
+    {
+      "type": "row",
+      "title": "Сводка",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 100,
+      "collapsed": false,
+      "panels": []
     },
-    "editable": true,
-    "fiscalYearStartMonth": 0,
-    "graphTooltip": 1,
-    "links": [],
-    "liveNow": true,
-    "refresh": "30s",
-    "schemaVersion": 39,
-    "tags": ["vpn-platform"],
-    "templating": { "list": [] },
-    "time": { "from": "now-6h", "to": "now" },
-    "timepicker": {},
-    "timezone": "",
-    "title": "VPN Platform — Обзор",
-    "uid": "vpn-platform-overview",
-    "version": 1,
-    "panels": [
-      {
-        "type": "row",
-        "title": "Сводка",
-        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
-        "id": 100,
-        "collapsed": false,
-        "panels": []
+    {
+      "type": "stat",
+      "title": "Пользователи (всего)",
+      "id": 1,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 1
       },
-      {
-        "type": "stat",
-        "title": "Пользователи (всего)",
-        "id": 1,
-        "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "targets": [
-          {
-            "expr": "sum(vpn_platform_subscriptions_total)",
-            "refId": "A"
-          }
-        ],
-        "options": {
-          "colorMode": "background",
-          "graphMode": "area",
-          "justifyMode": "center",
-          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-          "textMode": "auto"
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(vpn_platform_subscriptions_total{service=\"vpn-orchestrator\"})",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "fieldConfig": {
-          "defaults": {
-            "color": { "mode": "fixed", "fixedColor": "blue" },
-            "unit": "short",
-            "decimals": 0
-          },
-          "overrides": []
-        }
+        "textMode": "auto"
       },
-      {
-        "type": "stat",
-        "title": "Активные подписки",
-        "id": 2,
-        "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "targets": [
-          {
-            "expr": "sum(vpn_platform_subscriptions_total{status=~\"active|grace\"})",
-            "refId": "A"
-          }
-        ],
-        "options": {
-          "colorMode": "background",
-          "graphMode": "area",
-          "justifyMode": "center",
-          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-          "textMode": "auto"
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "unit": "short",
+          "decimals": 0
         },
-        "fieldConfig": {
-          "defaults": {
-            "color": { "mode": "fixed", "fixedColor": "green" },
-            "unit": "short",
-            "decimals": 0
-          },
-          "overrides": []
-        }
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Активные подписки",
+      "id": 2,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 1
       },
-      {
-        "type": "stat",
-        "title": "Триалы",
-        "id": 3,
-        "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "targets": [
-          {
-            "expr": "sum(vpn_platform_subscriptions_total{status=\"trial\"})",
-            "refId": "A"
-          }
-        ],
-        "options": {
-          "colorMode": "background",
-          "graphMode": "area",
-          "justifyMode": "center",
-          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-          "textMode": "auto"
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(vpn_platform_subscriptions_total{status=~\"active|grace\",service=\"vpn-orchestrator\"})",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "fieldConfig": {
-          "defaults": {
-            "color": { "mode": "fixed", "fixedColor": "purple" },
-            "unit": "short",
-            "decimals": 0
-          },
-          "overrides": []
-        }
+        "textMode": "auto"
       },
-      {
-        "type": "stat",
-        "title": "Ноды живы / всего",
-        "id": 4,
-        "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "targets": [
-          {
-            "expr": "sum(vpn_platform_nodes_count{state=\"alive\"})",
-            "refId": "A",
-            "legendFormat": "живы"
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
           },
-          {
-            "expr": "sum(vpn_platform_nodes_count{state=\"enabled\"})",
-            "refId": "B",
-            "legendFormat": "включены"
-          }
-        ],
-        "options": {
-          "colorMode": "value",
-          "graphMode": "none",
-          "justifyMode": "center",
-          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-          "textMode": "value_and_name"
+          "unit": "short",
+          "decimals": 0
         },
-        "fieldConfig": {
-          "defaults": {
-            "color": { "mode": "thresholds" },
-            "unit": "short",
-            "decimals": 0,
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                { "color": "red", "value": null },
-                { "color": "green", "value": 1 }
-              ]
-            }
-          },
-          "overrides": []
-        }
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Триалы",
+      "id": 3,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 1
       },
-      {
-        "type": "gauge",
-        "title": "Общая загрузка пула",
-        "id": 5,
-        "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "targets": [
-          {
-            "expr": "100 * sum(vpn_platform_pool_active_total) / clamp_min(sum(vpn_platform_pool_capacity_total), 1)",
-            "refId": "A"
-          }
-        ],
-        "options": {
-          "orientation": "auto",
-          "showThresholdLabels": false,
-          "showThresholdMarkers": true,
-          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(vpn_platform_subscriptions_total{status=\"trial\",service=\"vpn-orchestrator\"})",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "fieldConfig": {
-          "defaults": {
-            "color": { "mode": "thresholds" },
-            "unit": "percent",
-            "min": 0,
-            "max": 100,
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                { "color": "green", "value": null },
-                { "color": "yellow", "value": 70 },
-                { "color": "red", "value": 90 }
-              ]
-            }
-          },
-          "overrides": []
-        }
+        "textMode": "auto"
       },
-      {
-        "type": "stat",
-        "title": "Сборщик метрик",
-        "id": 6,
-        "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "targets": [
-          {
-            "expr": "time() - vpn_platform_metrics_collector_last_run_timestamp",
-            "refId": "A"
-          }
-        ],
-        "options": {
-          "colorMode": "background",
-          "graphMode": "none",
-          "justifyMode": "center",
-          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-          "textMode": "auto"
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          },
+          "unit": "short",
+          "decimals": 0
         },
-        "fieldConfig": {
-          "defaults": {
-            "color": { "mode": "thresholds" },
-            "unit": "s",
-            "decimals": 0,
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                { "color": "green", "value": null },
-                { "color": "yellow", "value": 60 },
-                { "color": "red", "value": 120 }
-              ]
-            }
-          },
-          "overrides": []
-        }
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Ноды живы / всего",
+      "id": 4,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 1
       },
-  
-      {
-        "type": "row",
-        "title": "Здоровье инфраструктуры",
-        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
-        "id": 101,
-        "collapsed": false,
-        "panels": []
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
       },
-      {
-        "type": "table",
-        "title": "Сервисы (доступность)",
-        "id": 10,
-        "gridPos": { "h": 7, "w": 10, "x": 0, "y": 6 },
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "targets": [
-          {
-            "expr": "up{job=\"vpn-platform-services\"}",
-            "refId": "A",
-            "format": "table",
-            "instant": true
-          }
-        ],
-        "transformations": [
-          {
-            "id": "organize",
-            "options": {
-              "excludeByName": { "Time": true, "__name__": true, "job": true, "instance": true },
-              "renameByName": { "service": "Сервис", "Value": "Статус" }
-            }
-          }
-        ],
-        "options": {
-          "showHeader": true,
-          "cellHeight": "sm",
-          "footer": { "show": false }
+      "targets": [
+        {
+          "expr": "sum(vpn_platform_nodes_count{state=\"alive\",service=\"vpn-orchestrator\"})",
+          "refId": "A",
+          "legendFormat": "живы",
+          "instant": true
         },
-        "fieldConfig": {
-          "defaults": {
-            "custom": { "align": "auto", "displayMode": "auto" }
-          },
-          "overrides": [
-            {
-              "matcher": { "id": "byName", "options": "Статус" },
-              "properties": [
-                {
-                  "id": "mappings",
-                  "value": [
-                    { "type": "value", "options": { "0": { "text": "DOWN", "color": "red", "index": 0 } } },
-                    { "type": "value", "options": { "1": { "text": "UP", "color": "green", "index": 1 } } }
-                  ]
-                },
-                { "id": "custom.displayMode", "value": "color-background" }
-              ]
-            }
-          ]
+        {
+          "expr": "sum(vpn_platform_nodes_count{state=\"enabled\",service=\"vpn-orchestrator\"})",
+          "refId": "B",
+          "legendFormat": "включены",
+          "instant": true
         }
-      },
-      {
-        "type": "bargauge",
-        "title": "Живость нод (по heartbeat)",
-        "id": 11,
-        "gridPos": { "h": 7, "w": 7, "x": 10, "y": 6 },
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "targets": [
-          {
-            "expr": "vpn_platform_node_up",
-            "refId": "A",
-            "legendFormat": "{{title}} ({{country}})"
-          }
-        ],
-        "options": {
-          "orientation": "horizontal",
-          "displayMode": "lcd",
-          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "fieldConfig": {
-          "defaults": {
-            "color": { "mode": "thresholds" },
-            "unit": "short",
-            "min": 0,
-            "max": 1,
-            "mappings": [
-              { "type": "value", "options": { "0": { "text": "DOWN" } } },
-              { "type": "value", "options": { "1": { "text": "UP" } } }
-            ],
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                { "color": "red", "value": null },
-                { "color": "green", "value": 1 }
-              ]
-            }
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
           },
-          "overrides": []
-        }
-      },
-      {
-        "type": "stat",
-        "title": "Проблемные ноды",
-        "id": 12,
-        "gridPos": { "h": 7, "w": 7, "x": 17, "y": 6 },
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "targets": [
-          {
-            "expr": "sum(vpn_platform_nodes_count{state=\"stale\"})",
-            "refId": "A",
-            "legendFormat": "не отвечают"
-          },
-          {
-            "expr": "count(up{job=\"vpn-platform-services\"} == 0) or vector(0)",
-            "refId": "B",
-            "legendFormat": "сервисы down"
-          }
-        ],
-        "options": {
-          "colorMode": "background",
-          "graphMode": "none",
-          "justifyMode": "center",
-          "orientation": "horizontal",
-          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-          "textMode": "value_and_name"
-        },
-        "fieldConfig": {
-          "defaults": {
-            "color": { "mode": "thresholds" },
-            "unit": "short",
-            "decimals": 0,
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                { "color": "green", "value": null },
-                { "color": "red", "value": 1 }
-              ]
-            }
-          },
-          "overrides": []
-        }
-      },
-  
-      {
-        "type": "row",
-        "title": "Пользователи и подписки",
-        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 13 },
-        "id": 102,
-        "collapsed": false,
-        "panels": []
-      },
-      {
-        "type": "piechart",
-        "title": "Подписки по статусам",
-        "id": 20,
-        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 14 },
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "targets": [
-          {
-            "expr": "vpn_platform_subscriptions_total",
-            "refId": "A",
-            "legendFormat": "{{status}}",
-            "instant": true
-          }
-        ],
-        "options": {
-          "pieType": "donut",
-          "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] },
-          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-          "tooltip": { "mode": "single", "sort": "none" }
-        },
-        "fieldConfig": {
-          "defaults": {
-            "color": { "mode": "palette-classic" },
-            "unit": "short"
-          },
-          "overrides": [
-            { "matcher": { "id": "byName", "options": "active" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } } ] },
-            { "matcher": { "id": "byName", "options": "trial" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "purple" } } ] },
-            { "matcher": { "id": "byName", "options": "grace" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } } ] },
-            { "matcher": { "id": "byName", "options": "expired" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] },
-            { "matcher": { "id": "byName", "options": "none" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "gray" } } ] }
-          ]
-        }
-      },
-      {
-        "type": "timeseries",
-        "title": "Динамика подписок",
-        "id": 21,
-        "gridPos": { "h": 8, "w": 16, "x": 8, "y": 14 },
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "targets": [
-          {
-            "expr": "vpn_platform_subscriptions_total",
-            "refId": "A",
-            "legendFormat": "{{status}}"
-          }
-        ],
-        "options": {
-          "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
-          "tooltip": { "mode": "multi", "sort": "desc" }
-        },
-        "fieldConfig": {
-          "defaults": {
-            "color": { "mode": "palette-classic" },
-            "custom": {
-              "drawStyle": "line",
-              "lineInterpolation": "smooth",
-              "fillOpacity": 15,
-              "showPoints": "never",
-              "stacking": { "mode": "none", "group": "A" }
-            },
-            "unit": "short"
-          },
-          "overrides": [
-            { "matcher": { "id": "byName", "options": "active" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } } ] },
-            { "matcher": { "id": "byName", "options": "trial" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "purple" } } ] },
-            { "matcher": { "id": "byName", "options": "expired" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] }
-          ]
-        }
-      },
-  
-      {
-        "type": "row",
-        "title": "Нагрузка нод",
-        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
-        "id": 103,
-        "collapsed": false,
-        "panels": []
-      },
-      {
-        "type": "bargauge",
-        "title": "Загрузка нод (% заполнения)",
-        "id": 30,
-        "gridPos": { "h": 8, "w": 10, "x": 0, "y": 23 },
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "targets": [
-          {
-            "expr": "vpn_platform_node_load_percent",
-            "refId": "A",
-            "legendFormat": "{{title}} ({{country}})"
-          }
-        ],
-        "options": {
-          "orientation": "horizontal",
-          "displayMode": "gradient",
-          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
-        },
-        "fieldConfig": {
-          "defaults": {
-            "color": { "mode": "thresholds" },
-            "unit": "percent",
-            "min": 0,
-            "max": 100,
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                { "color": "green", "value": null },
-                { "color": "yellow", "value": 70 },
-                { "color": "red", "value": 90 }
-              ]
-            }
-          },
-          "overrides": []
-        }
-      },
-      {
-        "type": "table",
-        "title": "Детали нод",
-        "id": 31,
-        "gridPos": { "h": 8, "w": 14, "x": 10, "y": 23 },
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "targets": [
-          { "expr": "vpn_platform_node_active_users", "refId": "A", "format": "table", "instant": true },
-          { "expr": "vpn_platform_node_max_users", "refId": "B", "format": "table", "instant": true },
-          { "expr": "vpn_platform_node_load_percent", "refId": "C", "format": "table", "instant": true },
-          { "expr": "vpn_platform_node_up", "refId": "D", "format": "table", "instant": true },
-          { "expr": "vpn_platform_node_heartbeat_age_seconds", "refId": "E", "format": "table", "instant": true }
-        ],
-        "transformations": [
-          {
-            "id": "merge",
-            "options": {}
-          },
-          {
-            "id": "organize",
-            "options": {
-              "excludeByName": { "Time": true, "__name__": true, "job": true, "instance": true, "server_key": false },
-              "renameByName": {
-                "title": "Нода",
-                "country": "Страна",
-                "server_key": "Ключ",
-                "Value #A": "Активные",
-                "Value #B": "Лимит",
-                "Value #C": "Загрузка %",
-                "Value #D": "Жива",
-                "Value #E": "Heartbeat (сек)"
-              }
-            }
-          }
-        ],
-        "options": {
-          "showHeader": true,
-          "cellHeight": "sm",
-          "footer": { "show": false }
-        },
-        "fieldConfig": {
-          "defaults": { "custom": { "align": "auto", "displayMode": "auto" } },
-          "overrides": [
-            {
-              "matcher": { "id": "byName", "options": "Загрузка %" },
-              "properties": [
-                { "id": "unit", "value": "percent" },
-                { "id": "decimals", "value": 1 },
-                { "id": "custom.displayMode", "value": "gradient-gauge" },
-                { "id": "max", "value": 100 },
-                { "id": "thresholds", "value": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 90 } ] } }
-              ]
-            },
-            {
-              "matcher": { "id": "byName", "options": "Жива" },
-              "properties": [
-                {
-                  "id": "mappings",
-                  "value": [
-                    { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" } } },
-                    { "type": "value", "options": { "1": { "text": "UP", "color": "green" } } }
-                  ]
-                },
-                { "id": "custom.displayMode", "value": "color-background" }
-              ]
-            }
-          ]
-        }
-      },
-  
-      {
-        "type": "row",
-        "title": "Трафик",
-        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
-        "id": 104,
-        "collapsed": false,
-        "panels": []
-      },
-      {
-        "type": "timeseries",
-        "title": "Трафик по нодам (источник: node-agent / Xray)",
-        "id": 40,
-        "gridPos": { "h": 8, "w": 18, "x": 0, "y": 32 },
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "targets": [
-          {
-            "expr": "rate(vpn_platform_node_traffic_bytes[5m]) * 8",
-            "refId": "A",
-            "legendFormat": "{{server_key}} {{direction}}"
-          }
-        ],
-        "options": {
-          "legend": { "displayMode": "list", "placement": "bottom" },
-          "tooltip": { "mode": "multi", "sort": "desc" }
-        },
-        "fieldConfig": {
-          "defaults": {
-            "color": { "mode": "palette-classic" },
-            "custom": {
-              "drawStyle": "line",
-              "lineInterpolation": "smooth",
-              "fillOpacity": 10,
-              "showPoints": "never"
-            },
-            "unit": "bps"
-          },
-          "overrides": []
-        }
-      },
-      {
-        "type": "text",
-        "title": "О трафике",
-        "id": 41,
-        "gridPos": { "h": 8, "w": 6, "x": 18, "y": 32 },
-        "options": {
-          "mode": "markdown",
-          "content": "### Трафик\n\nМетрика `vpn_platform_node_traffic_bytes` наполняется **node-agent'ом**, который читает Xray Stats API на каждой ноде и публикует объём по пользователям/нодам.\n\nЕсли график пуст — node-agent ещё не настроен на сбор трафика (этап развития). Связь нод и живость при этом видны в разделе «Нагрузка нод» по heartbeat."
-        }
-      },
-  
-      {
-        "type": "row",
-        "title": "Платежи",
-        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 40 },
-        "id": 105,
-        "collapsed": false,
-        "panels": []
-      },
-      {
-        "type": "piechart",
-        "title": "Крипто-инвойсы по статусам",
-        "id": 50,
-        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 41 },
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "targets": [
-          {
-            "expr": "vpn_platform_crypto_invoices_total",
-            "refId": "A",
-            "legendFormat": "{{status}}",
-            "instant": true
-          }
-        ],
-        "options": {
-          "pieType": "pie",
-          "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] },
-          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
-        },
-        "fieldConfig": {
-          "defaults": { "color": { "mode": "palette-classic" }, "unit": "short" },
-          "overrides": []
-        }
-      },
-      {
-        "type": "timeseries",
-        "title": "Платежи (исходы)",
-        "id": 51,
-        "gridPos": { "h": 8, "w": 16, "x": 8, "y": 41 },
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "targets": [
-          {
-            "expr": "sum by (outcome) (increase(vpn_platform_billing_payments_total[1h]))",
-            "refId": "A",
-            "legendFormat": "{{outcome}}"
-          }
-        ],
-        "options": {
-          "legend": { "displayMode": "list", "placement": "bottom" },
-          "tooltip": { "mode": "multi" }
-        },
-        "fieldConfig": {
-          "defaults": {
-            "color": { "mode": "palette-classic" },
-            "custom": { "drawStyle": "bars", "fillOpacity": 60, "showPoints": "never" },
-            "unit": "short"
-          },
-          "overrides": []
-        }
-      },
-  
-      {
-        "type": "row",
-        "title": "Технические метрики",
-        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 49 },
-        "id": 106,
-        "collapsed": true,
-        "panels": [
-          {
-            "type": "timeseries",
-            "title": "Kafka: поток сообщений (consume)",
-            "id": 60,
-            "gridPos": { "h": 8, "w": 12, "x": 0, "y": 50 },
-            "datasource": { "type": "prometheus", "uid": "prometheus" },
-            "targets": [
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
               {
-                "expr": "sum by (topic) (rate(vpn_platform_kafka_consumed_total[5m]))",
-                "refId": "A",
-                "legendFormat": "{{topic}}"
-              }
-            ],
-            "options": {
-              "legend": { "displayMode": "list", "placement": "bottom" },
-              "tooltip": { "mode": "multi" }
-            },
-            "fieldConfig": {
-              "defaults": {
-                "color": { "mode": "palette-classic" },
-                "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "fillOpacity": 10, "showPoints": "never" },
-                "unit": "ops"
+                "color": "red",
+                "value": null
               },
-              "overrides": []
-            }
-          },
-          {
-            "type": "timeseries",
-            "title": "HTTP-запросы по статусам",
-            "id": 61,
-            "gridPos": { "h": 8, "w": 12, "x": 12, "y": 50 },
-            "datasource": { "type": "prometheus", "uid": "prometheus" },
-            "targets": [
               {
-                "expr": "sum by (status) (rate(vpn_platform_http_requests_total[5m]))",
-                "refId": "A",
-                "legendFormat": "{{status}}"
+                "color": "green",
+                "value": 1
               }
-            ],
-            "options": {
-              "legend": { "displayMode": "list", "placement": "bottom" },
-              "tooltip": { "mode": "multi" }
-            },
-            "fieldConfig": {
-              "defaults": {
-                "color": { "mode": "palette-classic" },
-                "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "fillOpacity": 10, "showPoints": "never" },
-                "unit": "reqps"
-              },
-              "overrides": []
-            }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "gauge",
+      "title": "Общая загрузка пула",
+      "id": 5,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "100 * sum(vpn_platform_pool_active_total{service=\"vpn-orchestrator\"}) / clamp_min(sum(vpn_platform_pool_capacity_total{service=\"vpn-orchestrator\"}), 1)",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "orientation": "auto",
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
           },
-          {
-            "type": "timeseries",
-            "title": "Память сервисов (RSS)",
-            "id": 62,
-            "gridPos": { "h": 8, "w": 12, "x": 0, "y": 58 },
-            "datasource": { "type": "prometheus", "uid": "prometheus" },
-            "targets": [
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
               {
-                "expr": "process_resident_memory_bytes{job=\"vpn-platform-services\"}",
-                "refId": "A",
-                "legendFormat": "{{service}}"
-              }
-            ],
-            "options": {
-              "legend": { "displayMode": "list", "placement": "bottom" },
-              "tooltip": { "mode": "multi" }
-            },
-            "fieldConfig": {
-              "defaults": {
-                "color": { "mode": "palette-classic" },
-                "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "fillOpacity": 10, "showPoints": "never" },
-                "unit": "bytes"
+                "color": "green",
+                "value": null
               },
-              "overrides": []
-            }
+              {
+                "color": "yellow",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Сборщик метрик",
+      "id": 6,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "time() - max(vpn_platform_metrics_collector_last_run_timestamp{service=\"vpn-orchestrator\"})",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
           },
-          {
-            "type": "timeseries",
-            "title": "Горутины",
-            "id": 63,
-            "gridPos": { "h": 8, "w": 12, "x": 12, "y": 58 },
-            "datasource": { "type": "prometheus", "uid": "prometheus" },
-            "targets": [
+          "unit": "s",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
               {
-                "expr": "go_goroutines{job=\"vpn-platform-services\"}",
-                "refId": "A",
-                "legendFormat": "{{service}}"
-              }
-            ],
-            "options": {
-              "legend": { "displayMode": "list", "placement": "bottom" },
-              "tooltip": { "mode": "multi" }
-            },
-            "fieldConfig": {
-              "defaults": {
-                "color": { "mode": "palette-classic" },
-                "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "fillOpacity": 10, "showPoints": "never" },
-                "unit": "short"
+                "color": "green",
+                "value": null
               },
-              "overrides": []
+              {
+                "color": "yellow",
+                "value": 60
+              },
+              {
+                "color": "red",
+                "value": 120
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Здоровье инфраструктуры",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "id": 101,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "table",
+      "title": "Сервисы (доступность)",
+      "id": 10,
+      "gridPos": {
+        "h": 7,
+        "w": 10,
+        "x": 0,
+        "y": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "up{job=\"vpn-platform-services\"}",
+          "refId": "A",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true
+            },
+            "renameByName": {
+              "service": "Сервис",
+              "Value": "Статус"
             }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Статус"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "DOWN",
+                        "color": "red",
+                        "index": 0
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "UP",
+                        "color": "green",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              }
+            ]
           }
         ]
       }
-    ]
-  }
+    },
+    {
+      "type": "bargauge",
+      "title": "Живость нод (по heartbeat)",
+      "id": 11,
+      "gridPos": {
+        "h": 7,
+        "w": 7,
+        "x": 10,
+        "y": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "vpn_platform_node_up{service=\"vpn-orchestrator\"}",
+          "refId": "A",
+          "legendFormat": "{{title}} ({{country}})",
+          "instant": true
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "lcd",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "min": 0,
+          "max": 1,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DOWN"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "UP"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Проблемные ноды",
+      "id": 12,
+      "gridPos": {
+        "h": 7,
+        "w": 7,
+        "x": 17,
+        "y": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(vpn_platform_nodes_count{state=\"stale\",service=\"vpn-orchestrator\"})",
+          "refId": "A",
+          "legendFormat": "не отвечают",
+          "instant": true
+        },
+        {
+          "expr": "count(up{job=\"vpn-platform-services\"} == 0) or vector(0)",
+          "refId": "B",
+          "legendFormat": "сервисы down",
+          "instant": true
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Пользователи и подписки",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
+      "id": 102,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "piechart",
+      "title": "Подписки по статусам",
+      "id": 20,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 14
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "vpn_platform_subscriptions_total{service=\"vpn-orchestrator\"}",
+          "refId": "A",
+          "legendFormat": "{{status}}",
+          "instant": true
+        }
+      ],
+      "options": {
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "active"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "trial"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "grace"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "yellow"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "expired"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "none"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "gray"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Динамика подписок",
+      "id": 21,
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 8,
+        "y": 14
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "vpn_platform_subscriptions_total{service=\"vpn-orchestrator\"}",
+          "refId": "A",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 15,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "active"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "trial"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "expired"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "row",
+      "title": "Нагрузка нод",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "id": 103,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "bargauge",
+      "title": "Загрузка нод (% заполнения)",
+      "id": 30,
+      "gridPos": {
+        "h": 8,
+        "w": 10,
+        "x": 0,
+        "y": 23
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "vpn_platform_node_load_percent{service=\"vpn-orchestrator\"}",
+          "refId": "A",
+          "legendFormat": "{{title}} ({{country}})",
+          "instant": true
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Детали нод",
+      "id": 31,
+      "gridPos": {
+        "h": 8,
+        "w": 14,
+        "x": 10,
+        "y": 23
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "vpn_platform_node_active_users{service=\"vpn-orchestrator\"}",
+          "refId": "A",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "expr": "vpn_platform_node_max_users{service=\"vpn-orchestrator\"}",
+          "refId": "B",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "expr": "vpn_platform_node_load_percent{service=\"vpn-orchestrator\"}",
+          "refId": "C",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "expr": "vpn_platform_node_up{service=\"vpn-orchestrator\"}",
+          "refId": "D",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "expr": "vpn_platform_node_heartbeat_age_seconds{service=\"vpn-orchestrator\"}",
+          "refId": "E",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "server_key",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "server_key": false
+            },
+            "renameByName": {
+              "title": "Нода",
+              "country": "Страна",
+              "server_key": "Ключ",
+              "Value #A": "Активные",
+              "Value #B": "Лимит",
+              "Value #C": "Загрузка %",
+              "Value #D": "Жива",
+              "Value #E": "Heartbeat (сек)"
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Загрузка %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "gradient-gauge"
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 70
+                    },
+                    {
+                      "color": "red",
+                      "value": 90
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Жива"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "DOWN",
+                        "color": "red"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "UP",
+                        "color": "green"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "row",
+      "title": "Трафик",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 31
+      },
+      "id": 104,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Трафик по нодам (источник: node-agent / Xray)",
+      "id": 40,
+      "gridPos": {
+        "h": 8,
+        "w": 18,
+        "x": 0,
+        "y": 32
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "rate(vpn_platform_node_traffic_bytes{service=\"vpn-orchestrator\"}[5m]) * 8",
+          "refId": "A",
+          "legendFormat": "{{server_key}} {{direction}}"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "showPoints": "never"
+          },
+          "unit": "bps"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "text",
+      "title": "О трафике",
+      "id": 41,
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 32
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### Трафик\n\nМетрика `vpn_platform_node_traffic_bytes` наполняется **node-agent'ом**, который читает Xray Stats API на каждой ноде и публикует объём по пользователям/нодам.\n\nЕсли график пуст — node-agent ещё не настроен на сбор трафика (этап развития). Связь нод и живость при этом видны в разделе «Нагрузка нод» по heartbeat."
+      }
+    },
+    {
+      "type": "row",
+      "title": "Платежи",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
+      "id": 105,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "piechart",
+      "title": "Крипто-инвойсы по статусам",
+      "id": 50,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 41
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "vpn_platform_crypto_invoices_total{service=\"vpn-orchestrator\"}",
+          "refId": "A",
+          "legendFormat": "{{status}}",
+          "instant": true
+        }
+      ],
+      "options": {
+        "pieType": "pie",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Платежи (исходы)",
+      "id": 51,
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 8,
+        "y": 41
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (increase(vpn_platform_billing_payments_total[1h]))",
+          "refId": "A",
+          "legendFormat": "{{outcome}}"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Выручка (крипто)",
+      "id": 52,
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 49
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (asset) (vpn_platform_crypto_revenue_total{service=\"vpn-orchestrator\"})",
+          "refId": "A",
+          "legendFormat": "{{asset}}",
+          "instant": true
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          },
+          "unit": "short",
+          "decimals": 2
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Оплачено инвойсов",
+      "id": 53,
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 8,
+        "y": 49
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "vpn_platform_crypto_paid_count{service=\"vpn-orchestrator\"}",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Технические метрики",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 54
+      },
+      "id": 106,
+      "collapsed": true,
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "Kafka: поток сообщений (consume)",
+          "id": 60,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 55
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "expr": "sum by (topic) (rate(vpn_platform_kafka_consumed_total[5m]))",
+              "refId": "A",
+              "legendFormat": "{{topic}}"
+            }
+          ],
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "fillOpacity": 10,
+                "showPoints": "never"
+              },
+              "unit": "ops"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "HTTP-запросы по статусам",
+          "id": 61,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 55
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "expr": "sum by (status) (rate(vpn_platform_http_requests_total[5m]))",
+              "refId": "A",
+              "legendFormat": "{{status}}"
+            }
+          ],
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "fillOpacity": 10,
+                "showPoints": "never"
+              },
+              "unit": "reqps"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Память сервисов (RSS)",
+          "id": 62,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 63
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "expr": "process_resident_memory_bytes{job=\"vpn-platform-services\"}",
+              "refId": "A",
+              "legendFormat": "{{service}}"
+            }
+          ],
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "fillOpacity": 10,
+                "showPoints": "never"
+              },
+              "unit": "bytes"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Горутины",
+          "id": 63,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 63
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "expr": "go_goroutines{job=\"vpn-platform-services\"}",
+              "refId": "A",
+              "legendFormat": "{{service}}"
+            }
+          ],
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "smooth",
+                "fillOpacity": 10,
+                "showPoints": "never"
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          }
+        }
+      ]
+    }
+  ]
+}
