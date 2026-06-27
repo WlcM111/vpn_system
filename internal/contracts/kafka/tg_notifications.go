@@ -15,4 +15,9 @@ type TgNotification struct {
 	Message    string     `json:"message"`
 	ParseMode  string     `json:"parse_mode,omitempty"`
 	Keyboard   TgKeyboard `json:"keyboard,omitempty"`
+	// PayURL — если задан, под сообщением показывается inline-кнопка «Оплатить»
+	// с этой ссылкой. Используется для ссылки на оплату YooKassa. Не сочетается
+	// с Keyboard в одном сообщении (Telegram-ограничение), поэтому при PayURL
+	// reply-клавиатура игнорируется.
+	PayURL string `json:"pay_url,omitempty"`
 }

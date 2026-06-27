@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
 	commonkafka "vpn-platform/internal/common/kafka"
 	kafkacontracts "vpn-platform/internal/contracts/kafka"
@@ -50,17 +51,27 @@ func (a *App) sendKafkaNotificationToUser(n *kafkacontracts.TgNotification) erro
 		msg.ParseMode = n.ParseMode
 	}
 
-	switch n.Keyboard {
-	case kafkacontracts.TgKeyboardMainMenu:
-		msg.ReplyMarkup = mainMenuKeyboard()
-	case kafkacontracts.TgKeyboardBuyMenu:
-		msg.ReplyMarkup = buyMenuKeyboard()
-	case kafkacontracts.TgKeyboardTrialOrBuy:
-		msg.ReplyMarkup = trialOrBuyKeyboard()
-	case kafkacontracts.TgKeyboardMySubscriptionConfig:
-		msg.ReplyMarkup = mySubKeyboardWithConfig()
-	case kafkacontracts.TgKeyboardMainMenuWithBack:
-		msg.ReplyMarkup = mainMenuWithBackKeyboard()
+	// PayURL имеет приоритет: показываем inline-кнопку «Оплатить» (с reply-меню
+	// в одном сообщении её совмещать нельзя — Telegram-ограничение).
+	if strings.TrimSpace(n.PayURL) != "" {
+		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonURL("💳 Оплатить", n.PayURL),
+			),
+		)
+	} else {
+		switch n.Keyboard {
+		case kafkacontracts.TgKeyboardMainMenu:
+			msg.ReplyMarkup = mainMenuKeyboard()
+		case kafkacontracts.TgKeyboardBuyMenu:
+			msg.ReplyMarkup = buyMenuKeyboard()
+		case kafkacontracts.TgKeyboardTrialOrBuy:
+			msg.ReplyMarkup = trialOrBuyKeyboard()
+		case kafkacontracts.TgKeyboardMySubscriptionConfig:
+			msg.ReplyMarkup = mySubKeyboardWithConfig()
+		case kafkacontracts.TgKeyboardMainMenuWithBack:
+			msg.ReplyMarkup = mainMenuWithBackKeyboard()
+		}
 	}
 
 	if _, err := a.bot.Send(msg); err != nil {

@@ -12,6 +12,8 @@ func (h *HTTPHandlers) RegisterAdmin(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/nodes", h.withAdminAuth(h.handleAdminNodes))
 	mux.HandleFunc("/admin/nodes/", h.withAdminAuth(h.handleAdminNodeByID))
 	mux.HandleFunc("/admin/pool-items", h.withAdminAuth(h.handleAdminPoolItems))
+	mux.HandleFunc("/admin/cdn-endpoints", h.withAdminAuth(h.handleAdminCDNEndpoints))
+	mux.HandleFunc("/admin/cdn-endpoints/", h.withAdminAuth(h.handleAdminCDNEndpointByKey))
 	mux.HandleFunc("/admin/users/", h.withAdminAuth(h.handleAdminUserActions))
 }
 
@@ -114,6 +116,46 @@ func (h *HTTPHandlers) handleAdminUserActions(w http.ResponseWriter, r *http.Req
 	}
 	_, err = h.service.ensureUserCredentialsAndSync(r.Context(), access)
 	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAdminCDNEndpoints — создание/обновление CDN-эндпоинта (POST).
+func (h *HTTPHandlers) handleAdminCDNEndpoints(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req AdminCDNEndpointRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.CDNKey) == "" || strings.TrimSpace(req.Address) == "" {
+		http.Error(w, "cdn_key and address are required", http.StatusBadRequest)
+		return
+	}
+	if err := h.service.repo.UpsertAdminCDNEndpoint(r.Context(), req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAdminCDNEndpointByKey — удаление CDN-эндпоинта по ключу (DELETE).
+func (h *HTTPHandlers) handleAdminCDNEndpointByKey(w http.ResponseWriter, r *http.Request) {
+	cdnKey := strings.Trim(strings.TrimPrefix(r.URL.Path, "/admin/cdn-endpoints/"), "/")
+	if cdnKey == "" {
+		http.Error(w, "cdn_key required", http.StatusBadRequest)
+		return
+	}
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := h.service.repo.DeleteCDNEndpoint(r.Context(), cdnKey); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

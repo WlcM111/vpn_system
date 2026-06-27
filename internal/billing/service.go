@@ -229,13 +229,10 @@ func (s *Service) HandleCreateSubscriptionCheckout(
 		})
 	}
 
-	text := fmt.Sprintf(
-		"💳 Ссылка на оплату готова.\n\nПерейди по ссылке и заверши платеж:\n%s",
-		resp.Confirmation.ConfirmationURL,
-	)
 	return s.publishNotification(ctx, &kafkacontracts.TgNotification{
 		TelegramID: cmd.TelegramID,
-		Message:    text,
+		Message:    "💳 Ссылка на оплату готова. Нажмите кнопку ниже, чтобы перейти к оплате 👇",
+		PayURL:     resp.Confirmation.ConfirmationURL,
 	})
 }
 

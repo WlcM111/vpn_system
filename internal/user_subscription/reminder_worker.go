@@ -249,6 +249,11 @@ func (r *Repository) FindReminderCandidates(ctx context.Context) ([]reminderCand
 		FROM user_subscriptions
 		WHERE status IN ('trial', 'active')
 		  AND expires_at IS NOT NULL
+		  AND expires_at <= now() + interval '8 days'
+		  AND (
+		        last_reminder_stage IS DISTINCT FROM 'expired'
+		        OR reminder_anchor_at IS DISTINCT FROM expires_at
+		      )
 	`)
 	if err != nil {
 		return nil, err

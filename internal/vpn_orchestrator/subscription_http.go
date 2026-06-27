@@ -11,16 +11,22 @@ import (
 	"strings"
 	"time"
 
+	"vpn-platform/internal/common/ratelimit"
 	commonredis "vpn-platform/internal/common/redis"
 )
 
 type HTTPHandlers struct {
-	service *Service
-	redis   *commonredis.Client
+	service      *Service
+	redis        *commonredis.Client
+	localLimiter *ratelimit.Limiter
 }
 
 func NewHTTPHandlers(service *Service) *HTTPHandlers {
-	return &HTTPHandlers{service: service, redis: commonredis.NewFromEnv()}
+	return &HTTPHandlers{
+		service:      service,
+		redis:        commonredis.NewFromEnv(),
+		localLimiter: ratelimit.New(time.Minute),
+	}
 }
 
 func (h *HTTPHandlers) Register(mux *http.ServeMux) {
@@ -100,13 +106,15 @@ func (h *HTTPHandlers) allowSubscriptionRequest(ctx context.Context, token strin
 			limit = parsed
 		}
 	}
+	// Redis недоступен или ошибка — используем локальный in-memory лимитер
+	// (fail-safe вместо fail-open: грубая защита лучше, чем никакой).
 	if h.redis == nil {
-		return true
+		return h.localLimiter.Allow(token, limit)
 	}
 	key := "ratelimit:subscription:" + token
 	count, err := h.redis.Incr(ctx, key)
 	if err != nil {
-		return true
+		return h.localLimiter.Allow(token, limit)
 	}
 	if count == 1 {
 		_ = h.redis.Expire(ctx, key, time.Minute)

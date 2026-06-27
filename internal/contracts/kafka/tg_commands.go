@@ -21,6 +21,7 @@ const (
 type CreateSubscriptionCheckoutCommand struct {
 	Type              BillingCommandType `json:"type"`
 	CommandID         string             `json:"command_id"`
+	TraceID           string             `json:"trace_id,omitempty"`
 	TelegramID        int64              `json:"telegram_id"`
 	PlanCode          PlanCode           `json:"plan_code"`
 	SavePaymentMethod bool               `json:"save_payment_method,omitempty"`

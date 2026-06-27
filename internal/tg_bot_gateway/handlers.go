@@ -138,13 +138,13 @@ func (a *App) handleBuyMenuChoice(ctx context.Context, chatID int64, state *Chat
 	// Тарифы оплачиваются картой. Подписи кнопок содержат цену (labelMonthly и т.п.),
 	// поэтому сравниваем именно с ними. Крипта и привязка карты временно скрыты.
 	case labelMonthly():
-		a.handleCardCheckoutFallback(ctx, chatID, state, "Подписка 30 дней", 30, priceMonthly())
+		a.handleCardCheckout(ctx, chatID, state, kafkacontracts.PlanCodeMonthly, "Подписка 30 дней", 30, priceMonthly())
 	case labelQuarterly():
-		a.handleCardCheckoutFallback(ctx, chatID, state, "Подписка 90 дней", 90, priceQuarterly())
+		a.handleCardCheckout(ctx, chatID, state, kafkacontracts.PlanCodeQuarterly, "Подписка 90 дней", 90, priceQuarterly())
 	case labelSemiannual():
-		a.handleCardCheckoutFallback(ctx, chatID, state, "Подписка 180 дней", 180, priceSemiannual())
+		a.handleCardCheckout(ctx, chatID, state, kafkacontracts.PlanCodeSemiannual, "Подписка 180 дней", 180, priceSemiannual())
 	case labelAnnual():
-		a.handleCardCheckoutFallback(ctx, chatID, state, "Подписка 360 дней", 360, priceAnnual())
+		a.handleCardCheckout(ctx, chatID, state, kafkacontracts.PlanCodeAnnual, "Подписка 360 дней", 360, priceAnnual())
 	case btnBack:
 		state.Step = StepMainMenu
 		_ = a.stateStore.Set(ctx, chatID, state)
@@ -165,7 +165,13 @@ func (a *App) handleCardCheckoutFallback(ctx context.Context, chatID int64, stat
 
 	msg := tgbotapi.NewMessage(chatID, cardPaymentFallbackText(title, days, priceRUB))
 	msg.ParseMode = "Markdown"
-	msg.ReplyMarkup = buyMenuKeyboard()
+	// Inline-кнопка «Оплатить» под сообщением открывает ссылку на оплату.
+	// Пока ссылка — заглушка (cardPaymentURL); потом заменишь на реальную.
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonURL("💳 Оплатить", cardPaymentURL()),
+		),
+	)
 	if _, err := a.bot.Send(msg); err != nil {
 		log.Printf("[tg-bot] failed to send card fallback: %v", err)
 	}
@@ -587,4 +593,28 @@ func (a *App) sendSubscriptionLinksForUser(ctx context.Context, chatID int64) er
 
 	a.sendText(chatID, "Если что-то не получается — напиши в поддержку 👇", mainMenuWithBackKeyboard())
 	return nil
+}
+
+// handleCardCheckout — диспетчер оплаты картой.
+//   - YooKassa настроена   → реальный платёж через billing (handleCreateCheckout);
+//     billing создаст платёж в YooKassa и пришлёт пользователю реальную ссылку.
+//   - YooKassa не настроена → заглушка-ссылка (handleCardCheckoutFallback).
+//
+// Решение принимается по факту наличия токена (yooKassaConfigured) при каждом
+// запросе: заполнил YOOKASSA_SHOP_ID + YOOKASSA_SECRET_KEY и перезапустил бота —
+// переключение на реальные ссылки происходит автоматически.
+func (a *App) handleCardCheckout(
+	ctx context.Context,
+	chatID int64,
+	state *ChatState,
+	planCode kafkacontracts.PlanCode,
+	title string,
+	days int,
+	priceRUB string,
+) {
+	if yooKassaConfigured() {
+		a.handleCreateCheckout(ctx, chatID, state, planCode, days)
+		return
+	}
+	a.handleCardCheckoutFallback(ctx, chatID, state, title, days, priceRUB)
 }

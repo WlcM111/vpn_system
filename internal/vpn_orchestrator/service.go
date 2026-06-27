@@ -85,7 +85,7 @@ func (s *Service) RenderSubscriptionFeedDetailed(ctx context.Context, token stri
 		return nil, ErrAccessDenied
 	}
 
-	lines := make([]string, 0, len(feedItems))
+	lines := make([]string, 0, len(feedItems)+1)
 	for _, item := range feedItems {
 		if strings.TrimSpace(item.URL) != "" {
 			lines = append(lines, item.URL)
@@ -94,6 +94,12 @@ func (s *Service) RenderSubscriptionFeedDetailed(ctx context.Context, token stri
 	if len(lines) == 0 {
 		return nil, ErrAccessDenied
 	}
+
+	// CDN-конфигурации добавляются в общий фид с привязкой к серверам: для каждого
+	// выданного пользователю сервера подбирается привязанный к нему CDN (или
+	// глобальный/первый, если персональной привязки нет). UUID — тот же, что у
+	// обычных конфигов. Пользователь импортирует одну ссылку подписки.
+	lines = append(lines, s.cdnLinesForFeed(ctx, feedItems)...)
 
 	feed := strings.Join(lines, "\n") + "\n"
 	contentType := "text/plain; charset=utf-8"

@@ -87,11 +87,19 @@ services:
       - ../migrations:/migrations:ro
     command: >
       sh -c '
+      psql -h postgres -U "$$PGUSER" -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -c "CREATE TABLE IF NOT EXISTS schema_migrations (filename TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());";
       for sd in platform billing-service tg-bot-gateway user-subscription-service vpn-orchestrator-service crypto-billing-service; do
         if [ ! -d "/migrations/$$sd" ]; then continue; fi;
         for f in $$(find /migrations/$$sd -maxdepth 1 -type f -name "*.sql" | sort); do
-          echo "applying $$f";
+          key="$$sd/$$(basename $$f)";
+          applied=$$(psql -h postgres -U "$$PGUSER" -d "$$PGDATABASE" -tAc "SELECT 1 FROM schema_migrations WHERE filename=\$$\$$$$key\$$\$$;");
+          if [ "$$applied" = "1" ]; then
+            echo "skip (already applied): $$key";
+            continue;
+          fi;
+          echo "applying $$key";
           psql -h postgres -U "$$PGUSER" -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -f "$$f";
+          psql -h postgres -U "$$PGUSER" -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -c "INSERT INTO schema_migrations(filename) VALUES (\$$\$$$$key\$$\$$) ON CONFLICT DO NOTHING;";
         done;
       done
       '
@@ -284,6 +292,8 @@ services:
       METRICS_ADDR: :9090
       BROADCAST_TOKEN: ${BROADCAST_TOKEN:-}
       BROADCAST_HTTP_ADDR: ${BROADCAST_HTTP_ADDR:-:8087}
+      YOOKASSA_SHOP_ID: ${YOOKASSA_SHOP_ID:-}
+      YOOKASSA_SECRET_KEY: ${YOOKASSA_SECRET_KEY:-}
     ports:
       - "127.0.0.1:8085:8085"
       - "127.0.0.1:19085:9090"
