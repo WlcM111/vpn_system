@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -74,10 +76,40 @@ type telegraphPage struct {
 }
 
 // newTelegraphClient создаёт клиент с заданным HTTP-таймаутом.
+// Запросы к Telegraph идут через тот же прокси, что и к Telegram API
+// (переменные окружения HTTPS_PROXY / TG_HTTPS_PROXY): центральный сервер
+// не имеет прямого доступа к api.telegra.ph, но имеет его через прокси-ноду.
 func newTelegraphClient() *telegraphClient {
-	return &telegraphClient{
-		http: &http.Client{Timeout: 15 * time.Second},
+	transport := &http.Transport{
+		Proxy: telegraphProxyFunc(),
 	}
+	return &telegraphClient{
+		http: &http.Client{
+			Timeout:   15 * time.Second,
+			Transport: transport,
+		},
+	}
+}
+
+// telegraphProxyFunc возвращает функцию выбора прокси для http.Transport.
+// Берёт URL прокси из TG_HTTPS_PROXY (приоритетно) либо HTTPS_PROXY/HTTP_PROXY.
+// Если прокси не задан — возвращает nil (прямое соединение).
+func telegraphProxyFunc() func(*http.Request) (*url.URL, error) {
+	raw := strings.TrimSpace(os.Getenv("TG_HTTPS_PROXY"))
+	if raw == "" {
+		raw = strings.TrimSpace(os.Getenv("HTTPS_PROXY"))
+	}
+	if raw == "" {
+		raw = strings.TrimSpace(os.Getenv("HTTP_PROXY"))
+	}
+	if raw == "" {
+		return nil
+	}
+	proxyURL, err := url.Parse(raw)
+	if err != nil {
+		return nil
+	}
+	return http.ProxyURL(proxyURL)
 }
 
 // createAccount создаёт аккаунт Telegraph и сохраняет access_token в клиенте.
