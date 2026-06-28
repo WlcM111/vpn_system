@@ -210,6 +210,7 @@ services:
       SUBSCRIPTION_RATE_LIMIT_PER_MINUTE: ${SUBSCRIPTION_RATE_LIMIT_PER_MINUTE:-30}
       ORCHESTRATOR_ADMIN_USER: ${ORCHESTRATOR_ADMIN_USER:-admin}
       ORCHESTRATOR_ADMIN_PASS: ${ORCHESTRATOR_ADMIN_PASS:-}
+      CDN_CONFIG_ENABLED: ${CDN_CONFIG_ENABLED:-false}
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8084/readyz || exit 1"]
       interval: 10s
