@@ -116,7 +116,7 @@ func (s *Service) HandleStartTrial(ctx context.Context, cmd *kafkacontracts.Star
 		TelegramID: cmd.TelegramID,
 		ParseMode:  "Markdown",
 		Message: fmt.Sprintf(
-			"✨ Пробный период на *%d дн.* активирован!\nСтрана по умолчанию: 🇱🇹 Литва\nДействует до: *%s*.\n\nСейчас пришлю одну ссылку доступа. Внутри неё будет весь доступный пул серверов.",
+			"✨ Пробный период на *%d дн.* активирован!\nПрофиль подключения по умолчанию: 🇱🇹 Литва\nДоступность профилей может меняться по техническим причинам.\nДействует до: *%s*.\n\nСейчас пришлю ссылку доступа для настройки приложения.",
 			s.trialDays,
 			state.ExpiresAt.Format("02.01.2006"),
 		),
@@ -296,7 +296,7 @@ func (s *Service) HandleBillingPaymentSucceeded(ctx context.Context, event *kafk
 		TelegramID: event.TelegramID,
 		ParseMode:  "Markdown",
 		Message: fmt.Sprintf(
-			"%s\nПодписка активна до *%s*.\nОсталось дней: *%d*.\n\nСейчас пришлю одну ссылку доступа. Внутри неё будет весь доступный пул серверов.",
+			"%s\nПодписка активна до *%s*.\nОсталось дней: *%d*.\n\nСейчас пришлю ссылку доступа для настройки приложения.",
 			messagePrefix,
 			state.ExpiresAt.Format("02.01.2006"),
 			state.DaysLeft,
@@ -471,7 +471,7 @@ func (s *Service) sendStatusNotificationTx(ctx context.Context, tx pgx.Tx, state
 			TelegramID: state.TelegramID,
 			ParseMode:  "Markdown",
 			Message: fmt.Sprintf(
-				"✨ У тебя активен пробный период.\nСтрана по умолчанию: 🇱🇹 Литва\nДействует до: *%s*\nОсталось дней: *%d*.\n\nНажми «🔑 Получить ссылку доступа», чтобы получить одну subscription-ссылку для всего пула серверов.",
+				"✨ У тебя активен пробный период.\nПрофиль подключения по умолчанию: 🇱🇹 Литва\nДоступность профилей может меняться по техническим причинам.\nДействует до: *%s*\nОсталось дней: *%d*.\n\nНажми «🔗 Получить ссылку доступа», чтобы получить ссылку для настройки приложения.",
 				state.ExpiresAt.Format("02.01.2006"),
 				state.DaysLeft,
 			),
@@ -487,7 +487,7 @@ func (s *Service) sendStatusNotificationTx(ctx context.Context, tx pgx.Tx, state
 			TelegramID: state.TelegramID,
 			ParseMode:  "Markdown",
 			Message: fmt.Sprintf(
-				"✅ У тебя активная подписка.\nСтрана по умолчанию: 🇱🇹 Литва\nДействует до: *%s*\nОсталось дней: *%d*.\n%s\n\nНажми «🔑 Получить ссылку доступа», чтобы получить одну subscription-ссылку для всего пула серверов.",
+				"✅ У тебя активная подписка.\nПрофиль подключения по умолчанию: 🇱🇹 Литва\nДоступность профилей может меняться по техническим причинам.\nДействует до: *%s*\nОсталось дней: *%d*.\n%s\n\nНажми «🔗 Получить ссылку доступа», чтобы получить ссылку для настройки приложения.",
 				state.ExpiresAt.Format("02.01.2006"),
 				state.DaysLeft,
 				postfix,
@@ -504,7 +504,7 @@ func (s *Service) sendStatusNotificationTx(ctx context.Context, tx pgx.Tx, state
 			TelegramID: state.TelegramID,
 			ParseMode:  "Markdown",
 			Message: fmt.Sprintf(
-				"⚠️ Подписка в grace period.\nПоследнее автопродление не прошло, но доступ временно сохранен до *%s*.\n\nЧтобы доступ не остановился, оформи оплату повторно.",
+				"⚠️ Подписка находится в льготном периоде.\nПоследнее автопродление не прошло, но доступ временно сохранён до *%s*.\n\nЧтобы доступ не остановился, оформи оплату повторно.",
 				graceUntil,
 			),
 			Keyboard: kafkacontracts.TgKeyboardBuyMenu,
@@ -565,7 +565,7 @@ func (s *Service) sendLinksNotificationTx(ctx context.Context, tx pgx.Tx, state 
 	sb.WriteString("*" + link.Title + "*\n")
 	sb.WriteString("`" + link.URL + "`\n")
 	sb.WriteString("Срок действия доступа: *" + expireStr + "*\n\n")
-	sb.WriteString("Эта одна ссылка загружает весь доступный пул VLESS-конфигураций: страны, основные маршруты и специальные профили.\n\n")
+	sb.WriteString("Эта ссылка загружает доступные технические профили подключения, предусмотренные твоей подпиской.\n\n")
 	sb.WriteString("1️⃣ Скопируй ссылку целиком.\n")
 	sb.WriteString("2️⃣ Открой *v2RayTun* → вкладка *Connect*.\n")
 	sb.WriteString("3️⃣ Нажми ➕ → *Enter link* или *Import from clipboard*.\n")
@@ -597,7 +597,7 @@ func (s *Service) buildSubscriptionLinkTx(ctx context.Context, tx pgx.Tx, state 
 
 	return &SubscriptionLink{
 		Kind:      "subscription_feed",
-		Title:     "Единая subscription-ссылка",
+		Title:     "Единая ссылка доступа",
 		URL:       s.publicBaseURL + token,
 		ExpiresAt: cloneTime(expiresAt),
 	}, nil

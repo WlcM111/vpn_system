@@ -299,6 +299,7 @@ services:
       APP_LINK_V2RAYTUN: ${APP_LINK_V2RAYTUN:-}
       APP_LINK_HAPP: ${APP_LINK_HAPP:-}
       APP_LINK_STREISAND: ${APP_LINK_STREISAND:-}
+      APP_ENV: ${APP_ENV:-}
     ports:
       - "127.0.0.1:8085:8085"
       - "127.0.0.1:19085:9090"

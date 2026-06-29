@@ -274,7 +274,7 @@ func (a *App) handleCreateCheckout(
 
 		a.sendText(
 			chatID,
-			"✅ MOCK-режим: оплата симулирована, подписка активирована.\nСейчас пришлю ключи.",
+			"✅ Подписка активирована.\nСейчас пришлю ссылку доступа.",
 			mainMenuWithBackKeyboard(),
 		)
 		if err := a.sendSubscriptionLinksForUser(ctx, chatID); err != nil {
@@ -411,7 +411,7 @@ func (a *App) handleMySubscription(ctx context.Context, chatID int64, state *Cha
 	case StatusNone:
 		a.sendText(chatID, "Пока у тебя нет активной подписки.", trialOrBuyKeyboard())
 	case StatusTrial, StatusActive:
-		a.sendText(chatID, "Подписка активна. Нажми «🔑 Получить ключи».", mySubKeyboardWithConfig())
+		a.sendText(chatID, "Подписка активна. Нажми «🔗 Получить ссылку доступа».", mySubKeyboardWithConfig())
 	default:
 		a.sendText(chatID, "Подписка истекла.", trialOrBuyKeyboard())
 	}
@@ -523,7 +523,7 @@ func (a *App) handleGetConfig(ctx context.Context, chatID int64, state *ChatStat
 
 		if err := a.publishSubscriptionCommand(ctx, chatID, cmd); err != nil {
 			log.Printf("[tg-bot] publish get_links error: %v", err)
-			a.sendText(chatID, "Сейчас не получается получить ключи 😔", mainMenuWithBackKeyboard())
+			a.sendText(chatID, "Сейчас не получается сформировать ссылку доступа 😔", mainMenuWithBackKeyboard())
 			return
 		}
 
@@ -542,17 +542,17 @@ func (a *App) sendSubscriptionLinksForUser(ctx context.Context, chatID int64) er
 		if errors.Is(err, ErrNoActiveSubscription) {
 			a.sendText(
 				chatID,
-				"Похоже, у тебя нет активного триала или подписки.\nСначала активируй доступ, потом запроси ключи.",
+				"Похоже, у тебя нет активного пробного периода или подписки.\nСначала активируй доступ, потом запроси ссылку.",
 				trialOrBuyKeyboard(),
 			)
 			return nil
 		}
-		a.sendText(chatID, "Сейчас не получается получить ключи.", mainMenuWithBackKeyboard())
+		a.sendText(chatID, "Сейчас не получается сформировать ссылку доступа.", mainMenuWithBackKeyboard())
 		return err
 	}
 
 	var sb strings.Builder
-	sb.WriteString("🎉 Вот твои *VLESS-ключи* для v2RayTun:\n\n")
+	sb.WriteString("🎉 Вот твоя ссылка доступа для настройки приложения:\n\n")
 	for _, link := range links {
 		exp := "не ограничен"
 		if link.ExpiresAt != nil {
@@ -563,11 +563,11 @@ func (a *App) sendSubscriptionLinksForUser(ctx context.Context, chatID int64) er
 		sb.WriteString("`" + link.URL + "`\n")
 		sb.WriteString("Срок действия: *" + exp + "*\n\n")
 	}
-	sb.WriteString("1️⃣ Скопируй нужную ссылку.\n")
-	sb.WriteString("2️⃣ Открой *v2RayTun* → *Connect*.\n")
-	sb.WriteString("3️⃣ Нажми ➕ → *Enter link* или *Import from clipboard*.\n")
+	sb.WriteString("1️⃣ Скопируй ссылку целиком.\n")
+	sb.WriteString("2️⃣ Открой приложение *Happ*.\n")
+	sb.WriteString("3️⃣ Выбери импорт по ссылке (*Enter link* или *Import from clipboard*).\n")
 	sb.WriteString("4️⃣ Вставь ссылку и подтверди.\n\n")
-	sb.WriteString("⚠️ Не делись этими ссылками с другими людьми.")
+	sb.WriteString("⚠️ Не передавай ссылку другим людям: она привязана к твоей подписке.")
 
 	msg := tgbotapi.NewMessage(chatID, sb.String())
 	msg.ParseMode = "Markdown"
@@ -582,7 +582,7 @@ func (a *App) sendSubscriptionLinksForUser(ctx context.Context, chatID int64) er
 				Name:  "subscription-qr.png",
 				Bytes: png,
 			})
-			photo.Caption = "QR для основного маршрута."
+			photo.Caption = "QR-код для быстрой настройки."
 			if _, err := a.bot.Send(photo); err != nil {
 				log.Printf("[tg-bot] failed to send qr: %v", err)
 			}

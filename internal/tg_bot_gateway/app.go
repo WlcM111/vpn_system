@@ -142,7 +142,14 @@ func NewApp() (*App, error) {
 	}
 
 	backend := NewMockBackend(kafkaProducer, directBaseURL)
-	if kafkaProducer == nil && strings.ToLower(strings.TrimSpace(os.Getenv("TG_ALLOW_MOCK_BACKEND"))) != "true" {
+	isProduction := strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production")
+	allowMock := strings.EqualFold(strings.TrimSpace(os.Getenv("TG_ALLOW_MOCK_BACKEND")), "true")
+	// В production mock-режим запрещён всегда: подписка не должна активироваться
+	// без реальной оплаты, даже если Kafka недоступна или флаг выставлен по ошибке.
+	if isProduction && (kafkaProducer == nil || allowMock) {
+		return nil, errors.New("mock backend is forbidden in production: set KAFKA_BROKERS and remove TG_ALLOW_MOCK_BACKEND")
+	}
+	if kafkaProducer == nil && !allowMock {
 		return nil, errors.New("KAFKA_BROKERS is required unless TG_ALLOW_MOCK_BACKEND=true")
 	}
 
