@@ -200,10 +200,32 @@ func (s *Service) publishSyncCommands(ctx context.Context, access *AccessState, 
 		serverByNode[nodeID] = item.PoolItem.ServerKey
 	}
 
+	// CDN-эндпоинты загружаем один раз для всех узлов: для каждого сервера
+	// пользователя нужно зарегистрировать его UUID не только в основном inbound,
+	// но и в CDN-inbound, иначе CDN-ссылка (XHTTP) не работает.
+	cdnEndpoints, cdnErr := s.repo.ListEnabledCDNEndpoints(ctx)
+	if cdnErr != nil {
+		log.Printf("publishSyncCommands: load cdn endpoints failed: %v", cdnErr)
+		cdnEndpoints = nil
+	}
+
 	for nodeID, nodeItems := range byNode {
-		profiles := make([]kafkacontracts.VPNNodeUserProfile, 0, len(nodeItems))
+		profiles := make([]kafkacontracts.VPNNodeUserProfile, 0, len(nodeItems)*2)
+		// дедуп профилей по (inbound_tag|email): один пользователь не должен
+		// попасть в один и тот же inbound дважды.
+		seenProfile := make(map[string]struct{})
+		addProfile := func(p kafkacontracts.VPNNodeUserProfile) {
+			key := p.InboundTag + "|" + p.Email
+			if _, ok := seenProfile[key]; ok {
+				return
+			}
+			seenProfile[key] = struct{}{}
+			profiles = append(profiles, p)
+		}
+
 		for _, item := range nodeItems {
-			profiles = append(profiles, kafkacontracts.VPNNodeUserProfile{
+			// 1) основной профиль (как было) — регистрация в основном inbound.
+			addProfile(kafkacontracts.VPNNodeUserProfile{
 				ItemKey:     item.PoolItem.ItemKey,
 				CountryCode: item.PoolItem.CountryCode,
 				Title:       item.PoolItem.Title,
@@ -215,6 +237,28 @@ func (s *Service) publishSyncCommands(ctx context.Context, access *AccessState, 
 				Level:       item.PoolItem.Level,
 				AccessUntil: access.AccessUntil,
 			})
+
+			// 2) CDN-профили: для CDN, подобранного этому серверу, регистрируем
+			// тот же UUID/email в CDN-inbound. Тогда CDN-ссылка заработает.
+			if endpoint, ok := selectCDNForServer(cdnEndpoints, item.PoolItem.ServerKey); ok {
+				cdnInbound := endpoint.InboundTag
+				if cdnInbound == "" {
+					cdnInbound = "vless-xhttp-cdn-in"
+				}
+				addProfile(kafkacontracts.VPNNodeUserProfile{
+					ItemKey:     item.PoolItem.ItemKey,
+					CountryCode: item.PoolItem.CountryCode,
+					Title:       item.PoolItem.Title,
+					ProfileType: item.PoolItem.ProfileType,
+					InboundTag:  cdnInbound,
+					Email:       item.Credential.Email,
+					VLESSUUID:   item.Credential.VLESSUUID,
+					Flow:        item.PoolItem.Flow,
+					Level:       item.PoolItem.Level,
+					AccessUntil: access.AccessUntil,
+					Optional:    true,
+				})
+			}
 		}
 
 		cmd := kafkacontracts.NodeSyncUserCommand{
@@ -269,15 +313,48 @@ func (s *Service) publishRevokeCommands(ctx context.Context, telegramID int64, a
 		serverByNode[cred.NodeID] = cred.ServerKey
 	}
 
+	// Те же CDN-эндпоинты, что и при выдаче: отзываем доступ и из CDN-inbound,
+	// чтобы на узле не оставалось активного UUID после потери доступа.
+	revokeCDNEndpoints, revokeCDNErr := s.repo.ListEnabledCDNEndpoints(ctx)
+	if revokeCDNErr != nil {
+		log.Printf("publishRevokeCommands: load cdn endpoints failed: %v", revokeCDNErr)
+		revokeCDNEndpoints = nil
+	}
+
 	for nodeID, nodeCreds := range byNode {
-		profiles := make([]kafkacontracts.VPNNodeUserProfile, 0, len(nodeCreds))
+		profiles := make([]kafkacontracts.VPNNodeUserProfile, 0, len(nodeCreds)*2)
+		seenRevoke := make(map[string]struct{})
+		addRevoke := func(p kafkacontracts.VPNNodeUserProfile) {
+			key := p.InboundTag + "|" + p.Email
+			if _, ok := seenRevoke[key]; ok {
+				return
+			}
+			seenRevoke[key] = struct{}{}
+			profiles = append(profiles, p)
+		}
+
 		for _, cred := range nodeCreds {
-			profiles = append(profiles, kafkacontracts.VPNNodeUserProfile{
+			// основной inbound
+			addRevoke(kafkacontracts.VPNNodeUserProfile{
 				ItemKey:    cred.ItemKey,
 				InboundTag: cred.InboundTag,
 				Email:      cred.Email,
 				VLESSUUID:  cred.VLESSUUID,
 			})
+			// CDN-inbound (тот же подбор по серверу)
+			if endpoint, ok := selectCDNForServer(revokeCDNEndpoints, cred.ServerKey); ok {
+				cdnInbound := endpoint.InboundTag
+				if cdnInbound == "" {
+					cdnInbound = "vless-xhttp-cdn-in"
+				}
+				addRevoke(kafkacontracts.VPNNodeUserProfile{
+					ItemKey:    cred.ItemKey,
+					InboundTag: cdnInbound,
+					Email:      cred.Email,
+					VLESSUUID:  cred.VLESSUUID,
+					Optional:   true,
+				})
+			}
 		}
 
 		cmd := kafkacontracts.NodeRevokeUserCommand{

@@ -12,10 +12,11 @@ import (
 // AdminCDNEndpointRequest — тело запроса Admin API для создания/обновления CDN.
 // Привязка к серверу задаётся ServerKey; пустой ServerKey = глобальный CDN.
 type AdminCDNEndpointRequest struct {
-	CDNKey    string `json:"cdn_key"`
-	ServerKey string `json:"server_key,omitempty"`
-	Enabled   *bool  `json:"enabled,omitempty"`
-	SortOrder *int   `json:"sort_order,omitempty"`
+	CDNKey     string `json:"cdn_key"`
+	ServerKey  string `json:"server_key,omitempty"`
+	Enabled    *bool  `json:"enabled,omitempty"`
+	SortOrder  *int   `json:"sort_order,omitempty"`
+	InboundTag string `json:"inbound_tag,omitempty"`
 
 	Address     string `json:"address"`
 	ServerName  string `json:"server_name,omitempty"`
@@ -44,7 +45,7 @@ func (r *Repository) ListEnabledCDNEndpoints(ctx context.Context) ([]CDNEndpoint
 
 	rows, err := r.pool.Query(queryCtx, `
 		SELECT
-			cdn_key, COALESCE(server_key, ''), enabled, sort_order,
+			cdn_key, COALESCE(server_key, ''), enabled, sort_order, inbound_tag,
 			address, server_name, host, port, xhttp_path, mode, fingerprint, alpn, remarks,
 			padding_obfs_mode, padding_placement, padding_key, padding_method,
 			sc_max_buffered_posts, sc_min_posts_interval_ms
@@ -61,7 +62,7 @@ func (r *Repository) ListEnabledCDNEndpoints(ctx context.Context) ([]CDNEndpoint
 	for rows.Next() {
 		var e CDNEndpoint
 		if err := rows.Scan(
-			&e.CDNKey, &e.ServerKey, &e.Enabled, &e.SortOrder,
+			&e.CDNKey, &e.ServerKey, &e.Enabled, &e.SortOrder, &e.InboundTag,
 			&e.Address, &e.ServerName, &e.Host, &e.Port, &e.XHTTPPath, &e.Mode, &e.Fingerprint, &e.ALPN, &e.Remarks,
 			&e.PaddingObfsMode, &e.PaddingPlacement, &e.PaddingKey, &e.PaddingMethod,
 			&e.ScMaxBufferedPosts, &e.ScMinPostsIntervalMs,
@@ -110,12 +111,12 @@ func (r *Repository) UpsertAdminCDNEndpoint(ctx context.Context, req AdminCDNEnd
 
 	_, err := r.pool.Exec(queryCtx, `
 		INSERT INTO vpn_cdn_endpoints (
-			cdn_key, server_key, enabled, sort_order,
+			cdn_key, server_key, enabled, sort_order, inbound_tag,
 			address, server_name, host, port, xhttp_path, mode, fingerprint, alpn, remarks,
 			padding_obfs_mode, padding_placement, padding_key, padding_method,
 			sc_max_buffered_posts, sc_min_posts_interval_ms
 		) VALUES (
-			$1, $2, $3, $4,
+			$1, $2, $3, $4, COALESCE(NULLIF($20, ''), 'vless-xhttp-cdn-in'),
 			$5, $6, $7, $8, COALESCE(NULLIF($9, ''), '/api/uploadFile/'),
 			COALESCE(NULLIF($10, ''), 'packet-up'),
 			COALESCE(NULLIF($11, ''), 'chrome'),
@@ -132,6 +133,7 @@ func (r *Repository) UpsertAdminCDNEndpoint(ctx context.Context, req AdminCDNEnd
 			server_key = EXCLUDED.server_key,
 			enabled = EXCLUDED.enabled,
 			sort_order = EXCLUDED.sort_order,
+			inbound_tag = EXCLUDED.inbound_tag,
 			address = EXCLUDED.address,
 			server_name = EXCLUDED.server_name,
 			host = EXCLUDED.host,
@@ -152,7 +154,7 @@ func (r *Repository) UpsertAdminCDNEndpoint(ctx context.Context, req AdminCDNEnd
 		req.CDNKey, serverKey, enabled, sortOrder,
 		req.Address, req.ServerName, req.Host, port, req.XHTTPPath, req.Mode, req.Fingerprint, req.ALPN, req.Remarks,
 		paddingObfs, req.PaddingPlacement, req.PaddingKey, req.PaddingMethod,
-		scMax, req.ScMinPostsIntervalMs,
+		scMax, req.ScMinPostsIntervalMs, req.InboundTag,
 	)
 	return err
 }

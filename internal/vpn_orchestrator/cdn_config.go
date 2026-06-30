@@ -25,10 +25,11 @@ import (
 
 // CDNEndpoint — параметры одного CDN-фронта (из БД или из окружения).
 type CDNEndpoint struct {
-	CDNKey    string
-	ServerKey string // "" = глобальный (fallback)
-	Enabled   bool
-	SortOrder int
+	CDNKey     string
+	ServerKey  string // "" = глобальный (fallback)
+	Enabled    bool
+	SortOrder  int
+	InboundTag string // inbound на узле, куда регистрируется пользователь для этого CDN
 
 	Address     string
 	ServerName  string
