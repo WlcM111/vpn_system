@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -18,8 +19,6 @@ import (
 	"vpn-platform/internal/common/outbox"
 	"vpn-platform/internal/common/postgres"
 	"vpn-platform/internal/user_subscription"
-
-	kafkago "github.com/segmentio/kafka-go"
 )
 
 func main() {
@@ -41,6 +40,9 @@ func main() {
 	}
 	defer pool.Close()
 
+	// P2: персистентный счётчик ретраев консьюмера (переживает рестарты).
+	commonkafka.SetAttemptStore(commonkafka.NewDBAttemptStore(pool))
+
 	repo := user_subscription.NewRepository(pool)
 	svc := user_subscription.NewService(
 		repo,
@@ -49,23 +51,21 @@ func main() {
 	)
 
 	var producer *commonkafka.Producer
-	var subCmdReader *kafkago.Reader
-	var billingEventsReader *kafkago.Reader
+	var brokers []string
 
 	brokersEnv := strings.TrimSpace(os.Getenv("KAFKA_BROKERS"))
 	if brokersEnv != "" {
-		brokers := strings.Split(brokersEnv, ",")
+		brokers = strings.Split(brokersEnv, ",")
 		for i := range brokers {
 			brokers[i] = strings.TrimSpace(brokers[i])
 		}
 
 		producer = commonkafka.NewProducer(brokers)
-		subCmdReader = commonkafka.NewReader(brokers, commonkafka.TopicSubscriptionCommands, "user-subscription-service")
-		billingEventsReader = commonkafka.NewReader(brokers, commonkafka.TopicBillingEvents, "user-subscription-service")
 	} else {
 		log.Println("[user-subscription] KAFKA_BROKERS not set, kafka disabled")
-		producer = nil
 	}
+
+	consumerWorkers := parseIntEnv("CONSUMER_WORKERS", 3)
 
 	svc.SetProducer(producer)
 
@@ -93,20 +93,22 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
-	if subCmdReader != nil {
-		go func() {
-			if err := user_subscription.RunSubscriptionCommandsConsumer(ctx, subCmdReader, svc); err != nil {
-				slog.Error("user-subscription commands consumer stopped", "err", err)
-			}
-		}()
-	}
-
-	if billingEventsReader != nil {
-		go func() {
-			if err := user_subscription.RunBillingEventsConsumer(ctx, billingEventsReader, svc); err != nil {
-				slog.Error("user-subscription billing consumer stopped", "err", err)
-			}
-		}()
+	// S1: пул воркеров на партиции.
+	if len(brokers) > 0 {
+		for i := 0; i < consumerWorkers; i++ {
+			go func() {
+				r := commonkafka.NewReader(brokers, commonkafka.TopicSubscriptionCommands, "user-subscription-service")
+				if err := user_subscription.RunSubscriptionCommandsConsumer(ctx, r, svc); err != nil {
+					slog.Error("user-subscription commands consumer stopped", "err", err)
+				}
+			}()
+			go func() {
+				r := commonkafka.NewReader(brokers, commonkafka.TopicBillingEvents, "user-subscription-service")
+				if err := user_subscription.RunBillingEventsConsumer(ctx, r, svc); err != nil {
+					slog.Error("user-subscription billing consumer stopped", "err", err)
+				}
+			}()
+		}
 	}
 
 	go func() {
@@ -139,14 +141,19 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if subCmdReader != nil {
-		_ = subCmdReader.Close()
-	}
-	if billingEventsReader != nil {
-		_ = billingEventsReader.Close()
-	}
 	if producer != nil {
 		_ = producer.Close()
 	}
 	_ = httpServer.Shutdown(shutdownCtx)
+}
+
+func parseIntEnv(key string, fallback int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		return n
+	}
+	return fallback
 }

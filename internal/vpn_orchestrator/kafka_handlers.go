@@ -137,6 +137,14 @@ func RunVPNEventsConsumer(ctx context.Context, reader *kafkago.Reader, service *
 					}
 					return service.ApplyNodeUserRevoked(opCtx, &event)
 
+				case string(kafkacontracts.VPNEventNodeTraffic):
+					var event kafkacontracts.VPNNodeTrafficEvent
+					if err := json.Unmarshal(msg.Value, &event); err != nil {
+						slog.Warn("vpn-orchestrator invalid node_traffic event", "err", err)
+						return commonkafka.ErrSkip
+					}
+					return service.ApplyNodeTraffic(opCtx, &event)
+
 				case string(kafkacontracts.VPNEventNodeError):
 					var event kafkacontracts.VPNNodeErrorEvent
 					if err := json.Unmarshal(msg.Value, &event); err != nil {

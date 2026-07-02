@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -17,8 +18,6 @@ import (
 	"vpn-platform/internal/common/outbox"
 	"vpn-platform/internal/common/postgres"
 	"vpn-platform/internal/crypto_billing"
-
-	kafkago "github.com/segmentio/kafka-go"
 )
 
 func main() {
@@ -52,23 +51,27 @@ func main() {
 	}
 	defer pool.Close()
 
+	// P2: персистентный счётчик ретраев консьюмера (переживает рестарты).
+	commonkafka.SetAttemptStore(commonkafka.NewDBAttemptStore(pool))
+
 	// Kafka producer и consumer crypto.commands. Если KAFKA_BROKERS пуст —
 	// сервис продолжает работать "только с HTTP" (webhook будет принимать,
 	// но не сможет публиковать события). На проде KAFKA_BROKERS обязательно задан.
 	var producer *commonkafka.Producer
-	var commandsReader *kafkago.Reader
+	var brokers []string
 
 	brokersEnv := strings.TrimSpace(os.Getenv("KAFKA_BROKERS"))
 	if brokersEnv != "" {
-		brokers := strings.Split(brokersEnv, ",")
+		brokers = strings.Split(brokersEnv, ",")
 		for i := range brokers {
 			brokers[i] = strings.TrimSpace(brokers[i])
 		}
 		producer = commonkafka.NewProducer(brokers)
-		commandsReader = commonkafka.NewReader(brokers, commonkafka.TopicCryptoCommands, "crypto-billing-service")
 	} else {
 		slog.Warn("crypto-billing KAFKA_BROKERS not set, kafka disabled")
 	}
+
+	consumerWorkers := parseIntEnv("CONSUMER_WORKERS", 3)
 
 	// Доменные зависимости.
 	repo := crypto_billing.NewRepository(pool)
@@ -101,12 +104,16 @@ func main() {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
 	// Запуск Kafka consumer'а в отдельной горутине.
-	if commandsReader != nil {
-		go func() {
-			if err := crypto_billing.RunCommandConsumer(ctx, commandsReader, svc); err != nil {
-				slog.Error("crypto-billing command consumer stopped", "err", err)
-			}
-		}()
+	// S1: пул воркеров на партиции.
+	if len(brokers) > 0 {
+		for i := 0; i < consumerWorkers; i++ {
+			go func() {
+				r := commonkafka.NewReader(brokers, commonkafka.TopicCryptoCommands, "crypto-billing-service")
+				if err := crypto_billing.RunCommandConsumer(ctx, r, svc); err != nil {
+					slog.Error("crypto-billing command consumer stopped", "err", err)
+				}
+			}()
+		}
 	}
 
 	// Запуск outbox-worker'а, который читает event_outbox и публикует в Kafka.
@@ -137,11 +144,19 @@ func main() {
 	// доехали до завершения.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if commandsReader != nil {
-		_ = commandsReader.Close()
-	}
 	if producer != nil {
 		_ = producer.Close()
 	}
 	_ = server.Shutdown(shutdownCtx)
+}
+
+func parseIntEnv(key string, fallback int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		return n
+	}
+	return fallback
 }

@@ -18,8 +18,6 @@ import (
 	"vpn-platform/internal/common/outbox"
 	"vpn-platform/internal/common/postgres"
 	"vpn-platform/internal/vpn_orchestrator"
-
-	kafkago "github.com/segmentio/kafka-go"
 )
 
 func main() {
@@ -41,22 +39,24 @@ func main() {
 	}
 	defer pool.Close()
 
+	// P2: персистентный счётчик ретраев консьюмера (переживает рестарты).
+	commonkafka.SetAttemptStore(commonkafka.NewDBAttemptStore(pool))
+
 	var producer *commonkafka.Producer
-	var subscriptionEventsReader *kafkago.Reader
-	var vpnEventsReader *kafkago.Reader
+	var brokers []string
 
 	brokersEnv := strings.TrimSpace(os.Getenv("KAFKA_BROKERS"))
 	if brokersEnv != "" {
-		brokers := strings.Split(brokersEnv, ",")
+		brokers = strings.Split(brokersEnv, ",")
 		for i := range brokers {
 			brokers[i] = strings.TrimSpace(brokers[i])
 		}
 		producer = commonkafka.NewProducer(brokers)
-		subscriptionEventsReader = commonkafka.NewReader(brokers, commonkafka.TopicSubscriptionEvents, "vpn-orchestrator-service")
-		vpnEventsReader = commonkafka.NewReader(brokers, commonkafka.TopicVPNEvents, "vpn-orchestrator-service")
 	} else {
 		log.Println("[vpn-orchestrator] KAFKA_BROKERS not set, kafka disabled")
 	}
+
+	consumerWorkers := parseIntEnv("CONSUMER_WORKERS", 3)
 
 	repo := vpn_orchestrator.NewRepository(pool)
 	svc := vpn_orchestrator.NewService(repo, producer, vpn_orchestrator.ServiceConfig{
@@ -92,19 +92,23 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
-	if subscriptionEventsReader != nil {
-		go func() {
-			if err := vpn_orchestrator.RunSubscriptionEventsConsumer(ctx, subscriptionEventsReader, svc); err != nil {
-				log.Printf("[vpn-orchestrator] subscription events consumer stopped: %v", err)
-			}
-		}()
-	}
-	if vpnEventsReader != nil {
-		go func() {
-			if err := vpn_orchestrator.RunVPNEventsConsumer(ctx, vpnEventsReader, svc); err != nil {
-				log.Printf("[vpn-orchestrator] vpn events consumer stopped: %v", err)
-			}
-		}()
+	// S1: пул воркеров на партиции. Каждый воркер — свой reader в той же
+	// consumer group; Kafka распределяет партиции топика между воркерами.
+	if len(brokers) > 0 {
+		for i := 0; i < consumerWorkers; i++ {
+			go func() {
+				r := commonkafka.NewReader(brokers, commonkafka.TopicSubscriptionEvents, "vpn-orchestrator-service")
+				if err := vpn_orchestrator.RunSubscriptionEventsConsumer(ctx, r, svc); err != nil {
+					log.Printf("[vpn-orchestrator] subscription events consumer stopped: %v", err)
+				}
+			}()
+			go func() {
+				r := commonkafka.NewReader(brokers, commonkafka.TopicVPNEvents, "vpn-orchestrator-service")
+				if err := vpn_orchestrator.RunVPNEventsConsumer(ctx, r, svc); err != nil {
+					log.Printf("[vpn-orchestrator] vpn events consumer stopped: %v", err)
+				}
+			}()
+		}
 	}
 
 	go func() {
@@ -116,14 +120,27 @@ func main() {
 
 	go outbox.RunPublisher(ctx, pool, producer, "vpn-orchestrator-service")
 
+	// P1: периодическая пересинхронизация нод (самовосстановление после сбоев).
+	go svc.RunReconcileWorker(
+		ctx,
+		parseDurationEnv("RECONCILE_INTERVAL", 10*time.Minute),
+		parseIntEnv("RECONCILE_BATCH_SIZE", 200),
+	)
+
 	// Фоновый сборщик бизнес-метрик из БД для Prometheus/Grafana.
 	// Интервал и TTL heartbeat настраиваются через env (значения по умолчанию ниже).
 	metricsCollector := vpn_orchestrator.NewMetricsCollector(
 		pool,
 		parseDurationEnv("METRICS_COLLECT_INTERVAL", 15*time.Second),
+		parseDurationEnv("METRICS_HEAVY_INTERVAL", 60*time.Second),
 		parseDurationEnv("NODE_HEARTBEAT_TTL", 90*time.Second),
+		brokers,
 	)
 	go metricsCollector.Run(ctx)
+
+	// S9/S11: периодическая чистка опубликованного outbox и старого inbox.
+	// Запускаем в оркестраторе (одного достаточно — таблицы общие).
+	go outbox.RunCleanup(ctx, pool)
 
 	<-stop
 	log.Println("[vpn-orchestrator] shutting down...")
@@ -132,12 +149,6 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if subscriptionEventsReader != nil {
-		_ = subscriptionEventsReader.Close()
-	}
-	if vpnEventsReader != nil {
-		_ = vpnEventsReader.Close()
-	}
 	if producer != nil {
 		_ = producer.Close()
 	}

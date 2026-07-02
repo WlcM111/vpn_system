@@ -3,6 +3,9 @@ package outbox
 import (
 	"context"
 	"log/slog"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	commonkafka "vpn-platform/internal/common/kafka"
@@ -10,11 +13,27 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// outboxBatchSize — размер батча публикации за один проход. Настраивается через
+// env OUTBOX_BATCH_SIZE (S11). Больше батч — выше пропускная способность под
+// нагрузкой, но дольше один проход.
+func outboxBatchSize() int {
+	v := strings.TrimSpace(os.Getenv("OUTBOX_BATCH_SIZE"))
+	if v == "" {
+		return 50
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return 50
+	}
+	return n
+}
+
 func RunPublisher(ctx context.Context, pool *pgxpool.Pool, producer *commonkafka.Producer, serviceName string) {
 	if pool == nil || producer == nil {
 		return
 	}
 
+	batch := outboxBatchSize()
 	idleSleep := 200 * time.Millisecond
 	for {
 		select {
@@ -23,7 +42,7 @@ func RunPublisher(ctx context.Context, pool *pgxpool.Pool, producer *commonkafka
 		case <-time.After(idleSleep):
 		}
 
-		events, err := LockPending(ctx, pool, 50)
+		events, err := LockPending(ctx, pool, batch)
 		if err != nil {
 			slog.Error("outbox lock pending failed", "service", serviceName, "err", err)
 			idleSleep = 2 * time.Second

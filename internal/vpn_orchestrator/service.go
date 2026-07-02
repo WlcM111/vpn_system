@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -42,6 +43,8 @@ type SubscriptionFeedResult struct {
 	Body        []byte
 	ContentType string
 	Access      *AccessState
+	Uplink      int64
+	Downlink    int64
 }
 
 func NewService(repo *Repository, producer *commonkafka.Producer, cfg ServiceConfig) *Service {
@@ -77,6 +80,15 @@ func (s *Service) RenderSubscriptionFeedDetailed(ctx context.Context, token stri
 		return nil, ErrAccessDenied
 	}
 
+	// P5: трафик пользователя для заголовка Subscription-Userinfo (не критично —
+	// при ошибке просто отдадим нули, фид важнее).
+	var trafficUp, trafficDown int64
+	if tr, terr := s.repo.GetUserTraffic(ctx, access.TelegramID); terr == nil {
+		trafficUp, trafficDown = tr.Uplink, tr.Downlink
+	} else {
+		slog.Warn("get user traffic failed", "telegram_id", access.TelegramID, "err", terr)
+	}
+
 	feedItems, err := s.ensureUserCredentials(ctx, access)
 	if err != nil {
 		return nil, ErrAccessDenied
@@ -106,9 +118,9 @@ func (s *Service) RenderSubscriptionFeedDetailed(ctx context.Context, token stri
 
 	switch s.cfg.FeedFormat {
 	case "base64":
-		return &SubscriptionFeedResult{Body: []byte(base64.StdEncoding.EncodeToString([]byte(feed))), ContentType: contentType, Access: access}, nil
+		return &SubscriptionFeedResult{Body: []byte(base64.StdEncoding.EncodeToString([]byte(feed))), ContentType: contentType, Access: access, Uplink: trafficUp, Downlink: trafficDown}, nil
 	case "plain":
-		return &SubscriptionFeedResult{Body: []byte(feed), ContentType: contentType, Access: access}, nil
+		return &SubscriptionFeedResult{Body: []byte(feed), ContentType: contentType, Access: access, Uplink: trafficUp, Downlink: trafficDown}, nil
 	default:
 		return nil, fmt.Errorf("unsupported SUBSCRIPTION_FEED_FORMAT: %s", s.cfg.FeedFormat)
 	}
@@ -184,6 +196,39 @@ func (s *Service) selectBalancedItems(ctx context.Context, telegramID int64) ([]
 	return selected, nil
 }
 
+// buildUserProfiles формирует профили пользователя для одного узла: основной
+// (base) плюс CDN-вариант (тот же base, но с CDN inbound и Optional=true), если
+// для сервера подобран CDN-эндпоинт. Дедуп по (inbound_tag|email): если CDN-inbound
+// совпал с основным — второй профиль не добавляется. Единый источник логики для
+// publishSyncCommands и publishRevokeCommands (IM-2: убирает дублирование).
+func (s *Service) buildUserProfiles(base kafkacontracts.VPNNodeUserProfile, serverKey string, cdnEndpoints []CDNEndpoint) []kafkacontracts.VPNNodeUserProfile {
+	seen := make(map[string]struct{}, 2)
+	out := make([]kafkacontracts.VPNNodeUserProfile, 0, 2)
+	add := func(p kafkacontracts.VPNNodeUserProfile) {
+		key := p.InboundTag + "|" + p.Email
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, p)
+	}
+
+	add(base)
+
+	if endpoint, ok := selectCDNForServer(cdnEndpoints, serverKey); ok {
+		cdnInbound := endpoint.InboundTag
+		if cdnInbound == "" {
+			cdnInbound = "vless-xhttp-cdn-in"
+		}
+		cdnProfile := base
+		cdnProfile.InboundTag = cdnInbound
+		cdnProfile.Optional = true
+		add(cdnProfile)
+	}
+
+	return out
+}
+
 func (s *Service) publishSyncCommands(ctx context.Context, access *AccessState, feedItems []FeedItem) error {
 	if s.producer == nil {
 		return nil
@@ -211,21 +256,8 @@ func (s *Service) publishSyncCommands(ctx context.Context, access *AccessState, 
 
 	for nodeID, nodeItems := range byNode {
 		profiles := make([]kafkacontracts.VPNNodeUserProfile, 0, len(nodeItems)*2)
-		// дедуп профилей по (inbound_tag|email): один пользователь не должен
-		// попасть в один и тот же inbound дважды.
-		seenProfile := make(map[string]struct{})
-		addProfile := func(p kafkacontracts.VPNNodeUserProfile) {
-			key := p.InboundTag + "|" + p.Email
-			if _, ok := seenProfile[key]; ok {
-				return
-			}
-			seenProfile[key] = struct{}{}
-			profiles = append(profiles, p)
-		}
-
 		for _, item := range nodeItems {
-			// 1) основной профиль (как было) — регистрация в основном inbound.
-			addProfile(kafkacontracts.VPNNodeUserProfile{
+			base := kafkacontracts.VPNNodeUserProfile{
 				ItemKey:     item.PoolItem.ItemKey,
 				CountryCode: item.PoolItem.CountryCode,
 				Title:       item.PoolItem.Title,
@@ -236,29 +268,8 @@ func (s *Service) publishSyncCommands(ctx context.Context, access *AccessState, 
 				Flow:        item.PoolItem.Flow,
 				Level:       item.PoolItem.Level,
 				AccessUntil: access.AccessUntil,
-			})
-
-			// 2) CDN-профили: для CDN, подобранного этому серверу, регистрируем
-			// тот же UUID/email в CDN-inbound. Тогда CDN-ссылка заработает.
-			if endpoint, ok := selectCDNForServer(cdnEndpoints, item.PoolItem.ServerKey); ok {
-				cdnInbound := endpoint.InboundTag
-				if cdnInbound == "" {
-					cdnInbound = "vless-xhttp-cdn-in"
-				}
-				addProfile(kafkacontracts.VPNNodeUserProfile{
-					ItemKey:     item.PoolItem.ItemKey,
-					CountryCode: item.PoolItem.CountryCode,
-					Title:       item.PoolItem.Title,
-					ProfileType: item.PoolItem.ProfileType,
-					InboundTag:  cdnInbound,
-					Email:       item.Credential.Email,
-					VLESSUUID:   item.Credential.VLESSUUID,
-					Flow:        item.PoolItem.Flow,
-					Level:       item.PoolItem.Level,
-					AccessUntil: access.AccessUntil,
-					Optional:    true,
-				})
 			}
+			profiles = append(profiles, s.buildUserProfiles(base, item.PoolItem.ServerKey, cdnEndpoints)...)
 		}
 
 		cmd := kafkacontracts.NodeSyncUserCommand{
@@ -323,38 +334,14 @@ func (s *Service) publishRevokeCommands(ctx context.Context, telegramID int64, a
 
 	for nodeID, nodeCreds := range byNode {
 		profiles := make([]kafkacontracts.VPNNodeUserProfile, 0, len(nodeCreds)*2)
-		seenRevoke := make(map[string]struct{})
-		addRevoke := func(p kafkacontracts.VPNNodeUserProfile) {
-			key := p.InboundTag + "|" + p.Email
-			if _, ok := seenRevoke[key]; ok {
-				return
-			}
-			seenRevoke[key] = struct{}{}
-			profiles = append(profiles, p)
-		}
-
 		for _, cred := range nodeCreds {
-			// основной inbound
-			addRevoke(kafkacontracts.VPNNodeUserProfile{
+			base := kafkacontracts.VPNNodeUserProfile{
 				ItemKey:    cred.ItemKey,
 				InboundTag: cred.InboundTag,
 				Email:      cred.Email,
 				VLESSUUID:  cred.VLESSUUID,
-			})
-			// CDN-inbound (тот же подбор по серверу)
-			if endpoint, ok := selectCDNForServer(revokeCDNEndpoints, cred.ServerKey); ok {
-				cdnInbound := endpoint.InboundTag
-				if cdnInbound == "" {
-					cdnInbound = "vless-xhttp-cdn-in"
-				}
-				addRevoke(kafkacontracts.VPNNodeUserProfile{
-					ItemKey:    cred.ItemKey,
-					InboundTag: cdnInbound,
-					Email:      cred.Email,
-					VLESSUUID:  cred.VLESSUUID,
-					Optional:   true,
-				})
 			}
+			profiles = append(profiles, s.buildUserProfiles(base, cred.ServerKey, revokeCDNEndpoints)...)
 		}
 
 		cmd := kafkacontracts.NodeRevokeUserCommand{
@@ -462,6 +449,22 @@ func (s *Service) ApplyNodeHeartbeat(ctx context.Context, event *kafkacontracts.
 		return nil
 	}
 	return s.repo.UpdateNodeHeartbeat(ctx, event.NodeID, event.ServerKey, event.CreatedAt)
+}
+
+// ApplyNodeTraffic сохраняет кумулятивный трафик пользователей, присланный узлом.
+func (s *Service) ApplyNodeTraffic(ctx context.Context, event *kafkacontracts.VPNNodeTrafficEvent) error {
+	if event == nil || len(event.Items) == 0 {
+		return nil
+	}
+	for _, item := range event.Items {
+		if item.TelegramID == 0 {
+			continue
+		}
+		if err := s.repo.UpsertUserTraffic(ctx, item.TelegramID, item.Uplink, item.Downlink); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) ApplyNodeUserSynced(ctx context.Context, event *kafkacontracts.VPNNodeUserSyncedEvent) error {

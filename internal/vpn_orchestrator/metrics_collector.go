@@ -3,81 +3,136 @@ package vpn_orchestrator
 import (
 	"context"
 	"log/slog"
+	"strconv"
 	"time"
 
+	commonkafka "vpn-platform/internal/common/kafka"
 	commonmetrics "vpn-platform/internal/common/metrics"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	kafkago "github.com/segmentio/kafka-go"
 )
 
-// MetricsCollector периодически читает агрегаты из БД и выставляет их
-// как Prometheus gauge. Запускается фоном из main оркестратора.
+// MetricsCollector периодически читает агрегаты из БД (и лаг из Kafka) и
+// выставляет их как Prometheus gauge. Запускается фоном из main оркестратора.
 //
-// Почему здесь: оркестратор уже владеет данными о нодах (vpn_servers) и имеет
-// доступ к общей БД vpn_platform, где лежат подписки и крипто-инвойсы. Отдельный
-// сервис ради метрик не нужен — это лишняя инфраструктура.
+// S4: метрики разделены на «лёгкие» (ноды, heartbeat, outbox depth, lock waits,
+// connections — собираются часто, дёшевы) и «тяжёлые» (COUNT(*) по подпискам,
+// крипто-инвойсам — собираются реже, т.к. на больших таблицах это дорого).
 type MetricsCollector struct {
-	pool         *pgxpool.Pool
-	interval     time.Duration
-	heartbeatTTL time.Duration
+	pool          *pgxpool.Pool
+	interval      time.Duration // лёгкие метрики
+	heavyInterval time.Duration // тяжёлые агрегаты (COUNT(*))
+	heartbeatTTL  time.Duration
+
+	// S12: для сбора Kafka consumer lag. Если brokers пуст — лаг не собирается.
+	kafkaBrokers []string
+	lagTargets   []lagTarget
+}
+
+// lagTarget — пара (группа, топик), по которой считаем лаг.
+type lagTarget struct {
+	group string
+	topic string
 }
 
 // NewMetricsCollector создаёт сборщик.
 //
-//	interval     — как часто опрашивать БД (рекомендуется 15s).
-//	heartbeatTTL — порог свежести heartbeat ноды (та же величина, что у балансировщика).
-func NewMetricsCollector(pool *pgxpool.Pool, interval, heartbeatTTL time.Duration) *MetricsCollector {
+//	interval      — период лёгких метрик (рекомендуется 15s).
+//	heavyInterval — период тяжёлых агрегатов (рекомендуется 60s).
+//	heartbeatTTL  — порог свежести heartbeat ноды (та же величина, что у балансировщика).
+//	kafkaBrokers  — брокеры для сбора consumer lag (nil/пусто — лаг не собирается).
+func NewMetricsCollector(pool *pgxpool.Pool, interval, heavyInterval, heartbeatTTL time.Duration, kafkaBrokers []string) *MetricsCollector {
 	if interval <= 0 {
 		interval = 15 * time.Second
+	}
+	if heavyInterval <= 0 {
+		heavyInterval = 60 * time.Second
 	}
 	if heartbeatTTL <= 0 {
 		heartbeatTTL = 90 * time.Second
 	}
-	return &MetricsCollector{pool: pool, interval: interval, heartbeatTTL: heartbeatTTL}
+	return &MetricsCollector{
+		pool:          pool,
+		interval:      interval,
+		heavyInterval: heavyInterval,
+		heartbeatTTL:  heartbeatTTL,
+		kafkaBrokers:  kafkaBrokers,
+		// Все consumer-группы и топики, которые они читают (см. main каждого сервиса).
+		lagTargets: []lagTarget{
+			{"vpn-orchestrator-service", commonkafka.TopicSubscriptionEvents},
+			{"vpn-orchestrator-service", commonkafka.TopicVPNEvents},
+			{"billing-service", commonkafka.TopicBillingCommands},
+			{"billing-service", commonkafka.TopicSubscriptionEvents},
+			{"user-subscription-service", commonkafka.TopicSubscriptionCommands},
+			{"user-subscription-service", commonkafka.TopicBillingEvents},
+			{"crypto-billing-service", commonkafka.TopicCryptoCommands},
+		},
+	}
 }
 
-// Run запускает цикл сбора до отмены контекста. Блокирующий — вызывать в горутине.
+// Run запускает циклы сбора до отмены контекста. Блокирующий — вызывать в горутине.
 func (c *MetricsCollector) Run(ctx context.Context) {
 	// первый сбор сразу, чтобы метрики появились без задержки
-	c.collectOnce(ctx)
+	c.collectLight(ctx)
+	c.collectHeavy(ctx)
 
-	ticker := time.NewTicker(c.interval)
-	defer ticker.Stop()
+	lightTicker := time.NewTicker(c.interval)
+	defer lightTicker.Stop()
+	heavyTicker := time.NewTicker(c.heavyInterval)
+	defer heavyTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			c.collectOnce(ctx)
+		case <-lightTicker.C:
+			c.collectLight(ctx)
+		case <-heavyTicker.C:
+			c.collectHeavy(ctx)
 		}
 	}
 }
 
-func (c *MetricsCollector) collectOnce(ctx context.Context) {
+// collectLight — дешёвые метрики, собираются часто.
+func (c *MetricsCollector) collectLight(ctx context.Context) {
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	if err := c.collectSubscriptions(cctx); err != nil {
-		slog.Error("[metrics] collect subscriptions failed", "err", err)
-	}
 	if err := c.collectNodes(cctx); err != nil {
 		slog.Error("[metrics] collect nodes failed", "err", err)
 	}
 	if err := c.collectPoolItems(cctx); err != nil {
 		slog.Error("[metrics] collect pool items failed", "err", err)
 	}
+	if err := c.collectOutboxDepth(cctx); err != nil {
+		slog.Warn("[metrics] collect outbox depth failed", "err", err)
+	}
+	if err := c.collectPostgresHealth(cctx); err != nil {
+		slog.Warn("[metrics] collect postgres health failed", "err", err)
+	}
+	c.collectKafkaLag(cctx)
+
+	commonmetrics.MetricsCollectorLastRun.Set(float64(time.Now().Unix()))
+}
+
+// collectHeavy — дорогие агрегаты (COUNT(*)), собираются реже (S4).
+func (c *MetricsCollector) collectHeavy(ctx context.Context) {
+	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	if err := c.collectSubscriptions(cctx); err != nil {
+		slog.Error("[metrics] collect subscriptions failed", "err", err)
+	}
 	if err := c.collectCryptoInvoices(cctx); err != nil {
-		// крипто-инвойсы не критичны для общей картины — только лог
 		slog.Warn("[metrics] collect crypto invoices failed", "err", err)
 	}
 	if err := c.collectCryptoRevenue(cctx); err != nil {
 		slog.Warn("[metrics] collect crypto revenue failed", "err", err)
 	}
-
-	commonmetrics.MetricsCollectorLastRun.Set(float64(time.Now().Unix()))
 }
 
-// collectSubscriptions — пользователи по статусу подписки.
+// collectSubscriptions — пользователи по статусу подписки (тяжёлый COUNT).
 func (c *MetricsCollector) collectSubscriptions(ctx context.Context) error {
 	rows, err := c.pool.Query(ctx, `
 		SELECT status, COUNT(*) FROM user_subscriptions GROUP BY status
@@ -105,11 +160,21 @@ func (c *MetricsCollector) collectSubscriptions(ctx context.Context) error {
 }
 
 // collectNodes — нагрузка, вместимость, живость нод + агрегаты пула.
+// S2: active_users считается агрегацией из vpn_user_node_credentials (LEFT JOIN),
+// т.к. столбец vpn_servers.active_users больше не поддерживается.
 func (c *MetricsCollector) collectNodes(ctx context.Context) error {
 	rows, err := c.pool.Query(ctx, `
-		SELECT server_key, country_code, title, enabled,
-		       max_users, active_users, last_heartbeat_at
-		FROM vpn_servers
+		SELECT s.server_key, s.country_code, s.title, s.enabled,
+		       s.max_users,
+		       COALESCE(a.active_users, 0) AS active_users,
+		       s.last_heartbeat_at
+		FROM vpn_servers s
+		LEFT JOIN (
+			SELECT server_key, COUNT(*) AS active_users
+			FROM vpn_user_node_credentials
+			WHERE enabled = true
+			GROUP BY server_key
+		) a ON a.server_key = s.server_key
 	`)
 	if err != nil {
 		return err
@@ -215,7 +280,7 @@ func (c *MetricsCollector) collectPoolItems(ctx context.Context) error {
 	return nil
 }
 
-// collectCryptoInvoices — крипто-инвойсы по статусу.
+// collectCryptoInvoices — крипто-инвойсы по статусу (тяжёлый COUNT).
 func (c *MetricsCollector) collectCryptoInvoices(ctx context.Context) error {
 	rows, err := c.pool.Query(ctx, `
 		SELECT status, COUNT(*) FROM crypto_invoices GROUP BY status
@@ -263,4 +328,130 @@ func (c *MetricsCollector) collectCryptoRevenue(ctx context.Context) error {
 	}
 	commonmetrics.CryptoPaidCount.Set(paidTotal)
 	return rows.Err()
+}
+
+// collectOutboxDepth — S12: глубина очереди outbox по статусам.
+func (c *MetricsCollector) collectOutboxDepth(ctx context.Context) error {
+	rows, err := c.pool.Query(ctx, `
+		SELECT status, COUNT(*) FROM event_outbox GROUP BY status
+	`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	// сбрасываем известные статусы, чтобы исчезнувшие не залипали
+	known := []string{"pending", "processing", "retry", "published", "failed"}
+	for _, s := range known {
+		commonmetrics.OutboxDepth.WithLabelValues(s).Set(0)
+	}
+
+	var failed float64
+	for rows.Next() {
+		var status string
+		var cnt float64
+		if err := rows.Scan(&status, &cnt); err != nil {
+			return err
+		}
+		commonmetrics.OutboxDepth.WithLabelValues(status).Set(cnt)
+		if status == "failed" {
+			failed = cnt
+		}
+	}
+	commonmetrics.OutboxFailedTotal.Set(failed)
+	return rows.Err()
+}
+
+// collectPostgresHealth — S12: ожидания блокировок и занятость пула соединений.
+func (c *MetricsCollector) collectPostgresHealth(ctx context.Context) error {
+	var lockWaits float64
+	if err := c.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'
+	`).Scan(&lockWaits); err != nil {
+		return err
+	}
+	commonmetrics.PostgresLockWaits.Set(lockWaits)
+
+	stat := c.pool.Stat()
+	commonmetrics.PostgresConnectionsInUse.Set(float64(stat.AcquiredConns()))
+	return nil
+}
+
+// collectKafkaLag — S12: лаг consumer-групп по топикам. Если брокеры не заданы —
+// тихо пропускаем (Kafka отключена или сбор лага не нужен).
+func (c *MetricsCollector) collectKafkaLag(ctx context.Context) {
+	if len(c.kafkaBrokers) == 0 {
+		return
+	}
+	client := &kafkago.Client{Addr: kafkago.TCP(c.kafkaBrokers...)}
+
+	for _, t := range c.lagTargets {
+		lag, err := fetchConsumerLag(ctx, client, t.group, t.topic)
+		if err != nil {
+			slog.Debug("[metrics] kafka lag fetch failed", "group", t.group, "topic", t.topic, "err", err)
+			continue
+		}
+		for partition, l := range lag {
+			commonmetrics.KafkaConsumerLag.
+				WithLabelValues(t.topic, t.group, strconv.Itoa(partition)).
+				Set(float64(l))
+		}
+	}
+}
+
+// fetchConsumerLag возвращает лаг по каждой партиции топика для группы:
+// lag = (последний offset партиции) − (закоммиченный группой offset).
+func fetchConsumerLag(ctx context.Context, client *kafkago.Client, group, topic string) (map[int]int64, error) {
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	// 1) закоммиченные группой offset'ы по партициям
+	offsetsResp, err := client.OffsetFetch(cctx, &kafkago.OffsetFetchRequest{
+		GroupID: group,
+		Topics:  map[string][]int{topic: nil}, // nil → все партиции топика
+	})
+	if err != nil {
+		return nil, err
+	}
+	committed := make(map[int]int64)
+	for _, p := range offsetsResp.Topics[topic] {
+		committed[p.Partition] = p.CommittedOffset
+	}
+	if len(committed) == 0 {
+		return nil, nil
+	}
+
+	// 2) последние (log end) offset'ы тех же партиций
+	reqOffsets := make(map[string][]kafkago.OffsetRequest)
+	for partition := range committed {
+		reqOffsets[topic] = append(reqOffsets[topic], kafkago.OffsetRequest{
+			Partition: partition,
+			Timestamp: kafkago.LastOffset,
+		})
+	}
+	listResp, err := client.ListOffsets(cctx, &kafkago.ListOffsetsRequest{
+		Topics: reqOffsets,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	lag := make(map[int]int64)
+	for _, po := range listResp.Topics[topic] {
+		last := po.LastOffset
+		comm, ok := committed[po.Partition]
+		if !ok {
+			continue
+		}
+		// если группа ещё ничего не коммитила (comm<0), лаг считаем от 0
+		if comm < 0 {
+			comm = 0
+		}
+		l := last - comm
+		if l < 0 {
+			l = 0
+		}
+		lag[po.Partition] = l
+	}
+	return lag, nil
 }

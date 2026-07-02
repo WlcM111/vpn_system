@@ -142,6 +142,42 @@ var (
 		Name: "vpn_platform_metrics_collector_last_run_timestamp",
 		Help: "Unix timestamp of the last successful DB metrics collection.",
 	})
+
+	// --- S12: метрики масштабируемости ---
+
+	// Лаг консьюмера: отставание (в сообщениях) группы от конца партиции.
+	// Выставляется сборщиком метрик через Kafka lag-запрос. Чем больше — тем
+	// сильнее обработка не успевает за входящим потоком.
+	KafkaConsumerLag = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_kafka_consumer_lag",
+		Help: "Consumer group lag (messages behind log end offset) by topic and group.",
+	}, []string{"topic", "group", "partition"})
+
+	// Глубина очереди outbox: сколько событий ждут публикации (pending+retry).
+	// Растёт, если publisher не успевает или Kafka недоступна.
+	OutboxDepth = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_outbox_depth",
+		Help: "Number of outbox events awaiting publication by status.",
+	}, []string{"status"})
+
+	// Количество событий outbox в статусе failed (ушли в DLT после 20 попыток).
+	OutboxFailedTotal = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "vpn_platform_outbox_failed_total",
+		Help: "Number of outbox events in failed state.",
+	})
+
+	// Ожидания блокировок в Postgres (количество сессий, ждущих lock).
+	// Индикатор contention (например, по горячим строкам). Растёт — есть споры за блокировки.
+	PostgresLockWaits = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "vpn_platform_postgres_lock_waits",
+		Help: "Number of backends currently waiting on a lock.",
+	})
+
+	// Активные соединения пула Postgres (для контроля приближения к лимиту).
+	PostgresConnectionsInUse = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "vpn_platform_postgres_connections_in_use",
+		Help: "Number of Postgres connections currently in use by this service pool.",
+	})
 )
 
 func init() {
@@ -152,7 +188,10 @@ func init() {
 		SubscriptionsByStatus,
 		NodeActiveUsers, NodeMaxUsers, NodeLoadPercent, NodeUp, NodeHeartbeatAgeSeconds,
 		NodesCount, PoolCapacityTotal, PoolActiveTotal, PoolItemsCount,
-		CryptoInvoicesByStatus, NodeTrafficBytes, MetricsCollectorLastRun,
+		CryptoInvoicesByStatus, CryptoRevenueTotal, CryptoPaidCount,
+		NodeTrafficBytes, MetricsCollectorLastRun,
+		// S12: метрики масштабируемости
+		KafkaConsumerLag, OutboxDepth, OutboxFailedTotal, PostgresLockWaits, PostgresConnectionsInUse,
 	)
 }
 

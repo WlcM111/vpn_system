@@ -4,6 +4,10 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	commonmetrics "vpn-platform/internal/common/metrics"
@@ -17,22 +21,83 @@ type Handler func(ctx context.Context, msg Message) error
 
 var ErrSkip = errors.New("kafka: skip message")
 
+// envInt читает целочисленную env-переменную с фолбэком.
+func envInt(key string, fallback int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return n
+}
+
 func NewReader(brokers []string, topic, groupID string) *kafkago.Reader {
 	if len(brokers) == 0 {
 		slog.Warn("kafka consumer disabled: no brokers provided", "topic", topic, "group_id", groupID)
 		return nil
 	}
 
+	// S11: размеры фетча настраиваются через env. Под высокой нагрузкой
+	// увеличение MinBytes делает чтение батчевее (меньше round-trip'ов к брокеру).
+	minBytes := envInt("KAFKA_FETCH_MIN_BYTES", 1)
+	maxBytes := envInt("KAFKA_FETCH_MAX_BYTES", 10e6)
+	maxWaitMs := envInt("KAFKA_FETCH_MAX_WAIT_MS", 500)
+
 	return kafkago.NewReader(kafkago.ReaderConfig{
 		Brokers:        brokers,
 		Topic:          topic,
 		GroupID:        groupID,
-		MinBytes:       1,
-		MaxBytes:       10e6,
-		MaxWait:        500 * time.Millisecond,
+		MinBytes:       minBytes,
+		MaxBytes:       maxBytes,
+		MaxWait:        time.Duration(maxWaitMs) * time.Millisecond,
 		CommitInterval: 0,
 		StartOffset:    kafkago.FirstOffset,
 	})
+}
+
+// RunConsumerPool запускает N горутин-воркеров, каждая со своим Reader в одной
+// consumer group. Kafka автоматически распределит партиции топика между
+// воркерами (и между репликами сервиса). Это горизонтальный параллелизм
+// обработки в пределах одного процесса (S1).
+//
+//	newReader — фабрика Reader'ов (каждый воркер получает свой, т.к. Reader
+//	            не предназначен для конкурентного использования).
+//	workers   — число воркеров. Имеет смысл не больше числа партиций топика
+//	            (лишние будут простаивать). При workers<=1 запускается один воркер.
+//
+// Блокирующая: возвращает управление, когда все воркеры завершились (отмена ctx).
+func RunConsumerPool(
+	ctx context.Context,
+	newReader func() *kafkago.Reader,
+	workers int,
+	serviceName string,
+	handle Handler,
+	dltProducer *Producer,
+	dltTopic string,
+) error {
+	if workers <= 0 {
+		workers = 1
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		reader := newReader()
+		if reader == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(rd *kafkago.Reader) {
+			defer wg.Done()
+			defer func() { _ = rd.Close() }()
+			if err := RunConsumerWithDLT(ctx, rd, serviceName, handle, dltProducer, dltTopic); err != nil {
+				slog.Error("kafka consumer worker stopped", "service", serviceName, "err", err)
+			}
+		}(reader)
+	}
+	wg.Wait()
+	return nil
 }
 
 func RunConsumerWithDLT(ctx context.Context, reader *kafkago.Reader, serviceName string, handle Handler, dltProducer *Producer, dltTopic string) error {
@@ -42,8 +107,6 @@ func RunConsumerWithDLT(ctx context.Context, reader *kafkago.Reader, serviceName
 	if handle == nil {
 		return errors.New("nil kafka handler")
 	}
-
-	attempts := map[string]int{}
 
 	for {
 		msg, err := reader.FetchMessage(ctx)
@@ -61,39 +124,41 @@ func RunConsumerWithDLT(ctx context.Context, reader *kafkago.Reader, serviceName
 			if errors.Is(err, ErrSkip) {
 				commonmetrics.KafkaConsumedTotal.WithLabelValues(msg.Topic, "skip").Inc()
 				_ = publishDLT(ctx, dltProducer, dltTopic, msg, serviceName, err)
-				delete(attempts, attemptKey)
+				attemptStore.Reset(ctx, attemptKey)
 				if commitErr := reader.CommitMessages(ctx, msg); commitErr != nil {
 					return commitErr
 				}
 				continue
 			}
 
-			attempts[attemptKey]++
+			// P2: персистентный счётчик — переживает рестарты, гарантирует попадание
+			// отравленного сообщения в DLT даже при регулярных перезапусках.
+			attemptCount := attemptStore.Inc(ctx, attemptKey)
 			slog.Error("kafka message handling failed",
 				"service", serviceName,
 				"topic", msg.Topic,
 				"partition", msg.Partition,
 				"offset", msg.Offset,
 				"key", string(msg.Key),
-				"attempt", attempts[attemptKey],
+				"attempt", attemptCount,
 				"err", err,
 			)
 
-			if attempts[attemptKey] >= 20 && dltProducer != nil && dltTopic != "" {
+			if attemptCount >= 20 && dltProducer != nil && dltTopic != "" {
 				commonmetrics.KafkaConsumedTotal.WithLabelValues(msg.Topic, "dlt").Inc()
 				_ = publishDLT(ctx, dltProducer, dltTopic, msg, serviceName, err)
-				delete(attempts, attemptKey)
+				attemptStore.Reset(ctx, attemptKey)
 				if commitErr := reader.CommitMessages(ctx, msg); commitErr != nil {
 					return commitErr
 				}
 				continue
 			}
 
-			time.Sleep(time.Duration(minInt(attempts[attemptKey], 10)) * 500 * time.Millisecond)
+			time.Sleep(time.Duration(minInt(attemptCount, 10)) * 500 * time.Millisecond)
 			continue
 		}
 
-		delete(attempts, attemptKey)
+		attemptStore.Reset(ctx, attemptKey)
 		commonmetrics.KafkaConsumedTotal.WithLabelValues(msg.Topic, "ok").Inc()
 		if err := reader.CommitMessages(ctx, msg); err != nil {
 			return err

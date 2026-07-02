@@ -214,11 +214,21 @@ func (r *Repository) ListEnabledPoolItems(ctx context.Context) ([]PoolItem, erro
 }
 
 // LoadServersByCountry возвращает карту country_code -> ноды этой страны с метриками.
+// S2: active_users считается агрегацией из vpn_user_node_credentials (LEFT JOIN),
+// а не из горячего столбца vpn_servers.active_users (он больше не поддерживается).
 func (r *Repository) LoadServersByCountry(ctx context.Context) (map[string][]ServerLoad, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT server_key, country_code, enabled, max_users, active_users, weight, last_heartbeat_at
-		FROM vpn_servers
-		WHERE enabled = true
+		SELECT s.server_key, s.country_code, s.enabled, s.max_users,
+		       COALESCE(a.active_users, 0) AS active_users,
+		       s.weight, s.last_heartbeat_at
+		FROM vpn_servers s
+		LEFT JOIN (
+			SELECT server_key, COUNT(*) AS active_users
+			FROM vpn_user_node_credentials
+			WHERE enabled = true
+			GROUP BY server_key
+		) a ON a.server_key = s.server_key
+		WHERE s.enabled = true
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("load servers by country: %w", err)
@@ -475,6 +485,95 @@ func scanAccessState(row pgx.Row) (*AccessState, error) {
 		state.CountryCode = country.String
 	}
 	return &state, nil
+}
+
+// ListActiveAccessesForReconcile возвращает все доступы со статусом trial/active/grace
+// постранично (keyset по telegram_id). Используется reconcile-воркером для
+// периодической пересинхронизации нод. afterTelegramID=0 — с начала.
+func (r *Repository) ListActiveAccessesForReconcile(ctx context.Context, afterTelegramID int64, limit int) ([]AccessState, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT telegram_id, status, expires_at, grace_until, access_rev, country_code
+		FROM user_subscriptions
+		WHERE status IN ('trial', 'active', 'grace')
+		  AND telegram_id > $1
+		ORDER BY telegram_id
+		LIMIT $2
+	`, afterTelegramID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list active accesses for reconcile: %w", err)
+	}
+	defer rows.Close()
+
+	var out []AccessState
+	for rows.Next() {
+		state, err := scanAccessState(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan access for reconcile: %w", err)
+		}
+		out = append(out, *state)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// TryAdvisoryLock пытается взять сессионный advisory-lock Postgres (не блокирует).
+// Результат (взят/нет) пишется в locked.
+func (r *Repository) TryAdvisoryLock(ctx context.Context, key int64, locked *bool) error {
+	return r.pool.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, key).Scan(locked)
+}
+
+// AdvisoryUnlock освобождает ранее взятый advisory-lock.
+func (r *Repository) AdvisoryUnlock(ctx context.Context, key int64) error {
+	_, err := r.pool.Exec(ctx, `SELECT pg_advisory_unlock($1)`, key)
+	return err
+}
+
+// UserTrafficRow — суммарный трафик пользователя (байты).
+type UserTrafficRow struct {
+	Uplink   int64
+	Downlink int64
+}
+
+// UpsertUserTraffic обновляет кумулятивный трафик пользователя на конкретном узле.
+// Xray отдаёт кумулятив с момента своего старта; при рестарте Xray счётчик падает.
+// Чтобы не терять накопленное и не занижать при рестарте узла, берём GREATEST от
+// per-node максимума. Для простоты и корректности на один узел храним суммарно по
+// telegram_id: новое значение перезаписывает, только если оно больше текущего
+// (кумулятив монотонно растёт между рестартами Xray). При нескольких узлах это
+// даёт нижнюю оценку суммарного трафика, чего достаточно для отображения.
+func (r *Repository) UpsertUserTraffic(ctx context.Context, telegramID, uplink, downlink int64) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO vpn_user_traffic (telegram_id, uplink, downlink, updated_at)
+		VALUES ($1, $2, $3, now())
+		ON CONFLICT (telegram_id) DO UPDATE SET
+			uplink = GREATEST(vpn_user_traffic.uplink, EXCLUDED.uplink),
+			downlink = GREATEST(vpn_user_traffic.downlink, EXCLUDED.downlink),
+			updated_at = now()
+	`, telegramID, uplink, downlink)
+	if err != nil {
+		return fmt.Errorf("upsert user traffic tg=%d: %w", telegramID, err)
+	}
+	return nil
+}
+
+// GetUserTraffic возвращает трафик пользователя. Если записи нет — нули (не ошибка).
+func (r *Repository) GetUserTraffic(ctx context.Context, telegramID int64) (UserTrafficRow, error) {
+	var row UserTrafficRow
+	err := r.pool.QueryRow(ctx, `
+		SELECT uplink, downlink FROM vpn_user_traffic WHERE telegram_id = $1
+	`, telegramID).Scan(&row.Uplink, &row.Downlink)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return UserTrafficRow{}, nil
+		}
+		return UserTrafficRow{}, fmt.Errorf("get user traffic tg=%d: %w", telegramID, err)
+	}
+	return row, nil
 }
 
 // scanCredentialWithMeta — как scanCredential, плюс читает was_inserted и prev_server_key.

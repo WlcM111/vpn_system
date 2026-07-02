@@ -92,7 +92,7 @@ func (h *HTTPHandlers) handleSubscriptionFeed(w http.ResponseWriter, r *http.Req
 			until = res.Access.GraceUntil
 		}
 		if until != nil {
-			w.Header().Set("Subscription-Userinfo", fmt.Sprintf("upload=0; download=0; total=0; expire=%d", until.Unix()))
+			w.Header().Set("Subscription-Userinfo", fmt.Sprintf("upload=%d; download=%d; total=0; expire=%d", res.Uplink, res.Downlink, until.Unix()))
 		}
 	}
 	w.WriteHeader(http.StatusOK)
