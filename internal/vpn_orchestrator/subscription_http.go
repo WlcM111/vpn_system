@@ -84,7 +84,7 @@ func (h *HTTPHandlers) handleSubscriptionFeed(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Expires", "0")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Profile-Title", "VPN Platform")
+	w.Header().Set("Profile-Title", "House VPN")
 	w.Header().Set("Profile-Update-Interval", "24")
 	if res.Access != nil {
 		until := res.Access.AccessUntil

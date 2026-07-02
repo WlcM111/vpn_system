@@ -131,7 +131,8 @@ var (
 
 	// Трафик ноды в байтах (накопительный). ЗАГЛУШКА на этапе MVP:
 	// источник — Xray Stats API на ноде, который node-agent должен публиковать.
-	// Пока метрика регистрируется, но не наполняется (см. README по мониторингу).
+	// Кумулятивный трафик по узлам (uplink/downlink), выставляется в ApplyNodeTraffic
+	// из событий node-agent (P5). Используется панелью «Трафик по нодам».
 	NodeTrafficBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "vpn_platform_node_traffic_bytes",
 		Help: "Node traffic in bytes by direction (uplink/downlink). Populated by node-agent (future).",

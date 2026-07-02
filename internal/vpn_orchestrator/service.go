@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	commonkafka "vpn-platform/internal/common/kafka"
+	commonmetrics "vpn-platform/internal/common/metrics"
 	"vpn-platform/internal/common/outbox"
 	kafkacontracts "vpn-platform/internal/contracts/kafka"
 )
@@ -456,6 +457,10 @@ func (s *Service) ApplyNodeTraffic(ctx context.Context, event *kafkacontracts.VP
 	if event == nil || len(event.Items) == 0 {
 		return nil
 	}
+
+	// Суммарный кумулятивный трафик узла (для Prometheus-метрики / дашборда).
+	var totalUplink, totalDownlink int64
+
 	for _, item := range event.Items {
 		if item.TelegramID == 0 {
 			continue
@@ -463,7 +468,21 @@ func (s *Service) ApplyNodeTraffic(ctx context.Context, event *kafkacontracts.VP
 		if err := s.repo.UpsertUserTraffic(ctx, item.TelegramID, item.Uplink, item.Downlink); err != nil {
 			return err
 		}
+		totalUplink += item.Uplink
+		totalDownlink += item.Downlink
 	}
+
+	// Выставляем метрику трафика по узлу. Лейбл service Prometheus добавит сам
+	// при скрейпе. server_key используем и как country-лейбл (резолв страны здесь
+	// избыточен — панель группирует по direction). Значения кумулятивны (Xray
+	// не сбрасывает счётчики), поэтому в дашборде корректно работает rate().
+	serverKey := event.ServerKey
+	if serverKey == "" {
+		serverKey = event.NodeID
+	}
+	commonmetrics.NodeTrafficBytes.WithLabelValues(serverKey, serverKey, "uplink").Set(float64(totalUplink))
+	commonmetrics.NodeTrafficBytes.WithLabelValues(serverKey, serverKey, "downlink").Set(float64(totalDownlink))
+
 	return nil
 }
 
