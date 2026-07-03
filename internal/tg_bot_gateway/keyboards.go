@@ -21,6 +21,7 @@ const (
 	btnDocUser      = "📘 Пользовательское соглашение"
 	btnDocOffer     = "📗 Публичная оферта"
 	btnDocPrivacy   = "📕 Политика конфиденциальности"
+	btnDocRefund    = "📙 Политика возврата"
 
 	// Крипто-кнопки временно скрыты из меню. Константы оставлены — обработчики
 	// в handlers.go продолжают существовать, чтобы при возврате крипты вернуть
@@ -133,6 +134,9 @@ func servicesMenuKeyboard() tgbotapi.ReplyKeyboardMarkup {
 		),
 		tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton(btnDocPrivacy),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(btnDocRefund),
 		),
 		tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton(btnBack),

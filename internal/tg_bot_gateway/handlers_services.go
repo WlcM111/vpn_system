@@ -27,6 +27,8 @@ func (a *App) handleServicesMenuChoice(ctx context.Context, chatID int64, state 
 		a.sendDocumentLink(chatID, "Публичная оферта", docKindOffer)
 	case btnDocPrivacy:
 		a.sendDocumentLink(chatID, "Политика конфиденциальности", docKindPrivacy)
+	case btnDocRefund:
+		a.sendDocumentLink(chatID, "Политика возврата", docKindRefund)
 	case btnBack:
 		state.Step = StepMainMenu
 		_ = a.stateStore.Set(ctx, chatID, state)
@@ -46,6 +48,7 @@ const (
 	docKindUser docKind = iota
 	docKindOffer
 	docKindPrivacy
+	docKindRefund
 )
 
 // sendDocumentLink отправляет пользователю ссылку на Telegraph-страницу документа.
@@ -57,7 +60,7 @@ func (a *App) sendDocumentLink(chatID int64, title string, kind docKind) {
 		return
 	}
 
-	userURL, offerURL, privacyURL, ready := a.documents.links()
+	userURL, offerURL, privacyURL, refundURL, ready := a.documents.links()
 	if !ready {
 		a.sendText(chatID, documentsUnavailableText(), servicesMenuKeyboard())
 		return
@@ -71,6 +74,8 @@ func (a *App) sendDocumentLink(chatID int64, title string, kind docKind) {
 		url = offerURL
 	case docKindPrivacy:
 		url = privacyURL
+	case docKindRefund:
+		url = refundURL
 	}
 
 	if url == "" {

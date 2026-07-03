@@ -24,6 +24,7 @@ type documentsStore struct {
 	userURL    string // Пользовательское соглашение
 	offerURL   string // Публичная оферта
 	privacyURL string // Политика конфиденциальности
+	refundURL  string // Политика возврата
 }
 
 // newDocumentsStore создаёт пустое хранилище.
@@ -59,20 +60,27 @@ func (d *documentsStore) publishAll(ctx context.Context, tg *telegraphClient) {
 		return
 	}
 
+	refundURL, err := tg.createPage(ctx, "Политика возврата", "House VPN", refundPolicyText())
+	if err != nil {
+		log.Printf("[tg-bot] telegraph publish refund policy failed: %v", err)
+		return
+	}
+
 	d.mu.Lock()
 	d.userURL = userURL
 	d.offerURL = offerURL
 	d.privacyURL = privacyURL
+	d.refundURL = refundURL
 	d.ready = true
 	d.mu.Unlock()
 
-	log.Printf("[tg-bot] telegraph documents published: agreement=%s offer=%s privacy=%s",
-		userURL, offerURL, privacyURL)
+	log.Printf("[tg-bot] telegraph documents published: agreement=%s offer=%s privacy=%s refund=%s",
+		userURL, offerURL, privacyURL, refundURL)
 }
 
 // links возвращает URL документов и флаг готовности.
-func (d *documentsStore) links() (userURL, offerURL, privacyURL string, ready bool) {
+func (d *documentsStore) links() (userURL, offerURL, privacyURL, refundURL string, ready bool) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	return d.userURL, d.offerURL, d.privacyURL, d.ready
+	return d.userURL, d.offerURL, d.privacyURL, d.refundURL, d.ready
 }
