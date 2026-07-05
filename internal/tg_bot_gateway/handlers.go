@@ -288,6 +288,11 @@ func (a *App) handleCreateCheckout(
 		CommandID:  uuid.NewString(),
 		TelegramID: chatID,
 		PlanCode:   planCode,
+		// Автосписания пока не подключаем: метод не сохраняем.
+		SavePaymentMethod: false,
+		// Возврат покупателя после оплаты — в бота (иначе YooKassa вернёт на
+		// дефолтную заглушку billing). Пользователь возвращается прямо в чат.
+		ReturnURL: "https://t.me/vpn_house_bot",
 	}
 
 	opCtx, cancel := context.WithTimeout(ctx, 3*time.Second)

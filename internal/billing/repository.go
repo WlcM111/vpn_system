@@ -359,6 +359,21 @@ func (r *Repository) RecordWebhookFingerprint(ctx context.Context, paymentID, ev
 	return ct.RowsAffected() == 1, nil
 }
 
+// DeleteWebhookFingerprint удаляет ранее записанный отпечаток вебхука. Вызывается,
+// если обработка вебхука после его регистрации завершилась ошибкой — чтобы повторная
+// доставка того же вебхука от YooKassa не была отброшена как дубль и была обработана
+// заново (иначе платёж потеряется: деньги списаны, подписка не активирована).
+func (r *Repository) DeleteWebhookFingerprint(ctx context.Context, paymentID, eventType, fingerprint string) error {
+	_, err := r.pool.Exec(ctx, `
+		DELETE FROM billing_webhook_events
+		WHERE payment_id = $1 AND event_type = $2 AND fingerprint = $3
+	`, paymentID, eventType, fingerprint)
+	if err != nil {
+		return fmt.Errorf("delete webhook fingerprint: %w", err)
+	}
+	return nil
+}
+
 func (r *Repository) LockDueRefunds(ctx context.Context, now time.Time, limit int) ([]PendingRefund, error) {
 	rows, err := r.pool.Query(ctx, `
 		WITH picked AS (

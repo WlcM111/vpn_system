@@ -406,6 +406,24 @@ func (s *Service) ProcessWebhook(ctx context.Context, n *yooKassaWebhookNotifica
 		return ErrDuplicateWebhook
 	}
 
+	// Обработку выносим в отдельный метод: если она упадёт транзиентно (таймаут
+	// assertYooKassaPaymentPaid, блип БД), удаляем отпечаток, иначе повторный вебхук
+	// YooKassa придёт с тем же fingerprint, попадёт в ErrDuplicateWebhook и событие
+	// будет потеряно навсегда (деньги списаны, подписка не активирована).
+	if err := s.processWebhookPayload(ctx, n, raw); err != nil {
+		if delErr := s.repo.DeleteWebhookFingerprint(ctx, n.Object.ID, n.Event, fingerprint); delErr != nil {
+			slog.Error("failed to delete webhook fingerprint after processing error",
+				"payment_id", n.Object.ID, "event", n.Event, "delete_err", delErr, "orig_err", err)
+		}
+		return err
+	}
+	return nil
+}
+
+// processWebhookPayload выполняет фактическую обработку вебхука. Вызывается из
+// ProcessWebhook уже после дедупликации; при ошибке вызывающий удаляет отпечаток,
+// чтобы повторная доставка вебхука была обработана заново.
+func (s *Service) processWebhookPayload(ctx context.Context, n *yooKassaWebhookNotification, raw json.RawMessage) error {
 	record, err := s.repo.GetPaymentByPaymentID(ctx, n.Object.ID)
 	if err != nil {
 		return err
@@ -507,7 +525,11 @@ func (s *Service) handleSubscriptionPaymentSucceeded(ctx context.Context, record
 	chargeSource := billingChargeSourceFromMetadata(record.Metadata)
 	attemptNo := intFromMetadata(record.Metadata, "attempt_no")
 	paymentMethodID := firstNotEmpty(n.Object.PaymentMethod.ID, record.PaymentMethodID)
-	autoRenewEnabled := paymentMethodID != ""
+	// Автопродление включаем ТОЛЬКО если метод реально сохранён (saved=true).
+	// YooKassa всегда присылает payment_method.id, но при save_payment_method=false
+	// метод не сохранён и повторное списание по нему невозможно — иначе получим
+	// recurring-профиль, который гарантированно упадёт при следующем списании.
+	autoRenewEnabled := paymentMethodID != "" && n.Object.PaymentMethod.Saved
 	fallbackNextChargeAt := paidAt.Add(time.Duration(record.DurationDays) * 24 * time.Hour)
 
 	tx, err := s.repo.BeginTx(ctx)
@@ -1122,9 +1144,10 @@ type yooKassaConfirmationResp struct {
 }
 
 type yooKassaPaymentMethodRef struct {
-	ID   string                    `json:"id"`
-	Type string                    `json:"type"`
-	Card yooKassaPaymentMethodCard `json:"card"`
+	ID    string                    `json:"id"`
+	Type  string                    `json:"type"`
+	Saved bool                      `json:"saved"`
+	Card  yooKassaPaymentMethodCard `json:"card"`
 }
 
 type yooKassaPaymentMethodCard struct {
