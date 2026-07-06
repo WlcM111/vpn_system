@@ -114,7 +114,18 @@ func RunConsumerWithDLT(ctx context.Context, reader *kafkago.Reader, serviceName
 			if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
 				return nil
 			}
-			return err
+			// Транзиентная ошибка fetch (брокер недоступен, потеря координатора
+			// группы, rebalance после рестарта центра). НЕ убиваем цикл — kafka-go
+			// сам переустановит соединение при следующем FetchMessage. Небольшая
+			// пауза, чтобы не крутить busy-loop, и продолжаем.
+			slog.Warn("kafka fetch failed, will retry",
+				"service", serviceName, "err", err)
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(2 * time.Second):
+			}
+			continue
 		}
 
 		attemptKey := msg.Topic + ":" + string(msg.Key) + ":" + time.Unix(0, msg.Time.UnixNano()).UTC().Format(time.RFC3339Nano)

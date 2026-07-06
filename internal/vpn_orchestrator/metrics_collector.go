@@ -124,6 +124,9 @@ func (c *MetricsCollector) collectHeavy(ctx context.Context) {
 	if err := c.collectSubscriptions(cctx); err != nil {
 		slog.Error("[metrics] collect subscriptions failed", "err", err)
 	}
+	if err := c.collectSubscriptionLifecycle(cctx); err != nil {
+		slog.Error("[metrics] collect subscription lifecycle failed", "err", err)
+	}
 	if err := c.collectCryptoInvoices(cctx); err != nil {
 		slog.Warn("[metrics] collect crypto invoices failed", "err", err)
 	}
@@ -157,6 +160,52 @@ func (c *MetricsCollector) collectSubscriptions(ctx context.Context) error {
 		commonmetrics.SubscriptionsByStatus.WithLabelValues(status).Set(cnt)
 	}
 	return rows.Err()
+}
+
+// collectSubscriptionLifecycle считает подписки по ФАКТИЧЕСКОМУ сроку действия,
+// а не по сырому status. Это устраняет завышение «Триалов»/«Активных» из-за
+// ленивого истечения: протухшие строки остаются в своём status до обращения,
+// а тут мы разделяем их по expires_at vs now().
+//
+//	kind=trial: status='trial'                    → active/expired по expires_at
+//	kind=paid:  status IN ('active','grace')      → active/expired по expires_at
+//
+// total выставляется как active+expired (без отдельного запроса).
+func (c *MetricsCollector) collectSubscriptionLifecycle(ctx context.Context) error {
+	var (
+		trialActive, trialExpired float64
+		paidActive, paidExpired   float64
+	)
+
+	err := c.pool.QueryRow(ctx, `
+		SELECT
+			COUNT(*) FILTER (
+				WHERE status = 'trial' AND expires_at IS NOT NULL AND expires_at > now()
+			) AS trial_active,
+			COUNT(*) FILTER (
+				WHERE status = 'trial' AND (expires_at IS NULL OR expires_at <= now())
+			) AS trial_expired,
+			COUNT(*) FILTER (
+				WHERE status IN ('active', 'grace') AND expires_at IS NOT NULL AND expires_at > now()
+			) AS paid_active,
+			COUNT(*) FILTER (
+				WHERE status IN ('active', 'grace') AND (expires_at IS NULL OR expires_at <= now())
+			) AS paid_expired
+		FROM user_subscriptions
+	`).Scan(&trialActive, &trialExpired, &paidActive, &paidExpired)
+	if err != nil {
+		return err
+	}
+
+	commonmetrics.SubscriptionsByLifecycle.WithLabelValues("trial", "active").Set(trialActive)
+	commonmetrics.SubscriptionsByLifecycle.WithLabelValues("trial", "expired").Set(trialExpired)
+	commonmetrics.SubscriptionsByLifecycle.WithLabelValues("trial", "total").Set(trialActive + trialExpired)
+
+	commonmetrics.SubscriptionsByLifecycle.WithLabelValues("paid", "active").Set(paidActive)
+	commonmetrics.SubscriptionsByLifecycle.WithLabelValues("paid", "expired").Set(paidExpired)
+	commonmetrics.SubscriptionsByLifecycle.WithLabelValues("paid", "total").Set(paidActive + paidExpired)
+
+	return nil
 }
 
 // collectNodes — нагрузка, вместимость, живость нод + агрегаты пула.

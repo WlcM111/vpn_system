@@ -190,6 +190,88 @@
       }
     },
     {
+      "id": 7,
+      "type": "stat",
+      "title": "Триалы (активные / истёкшие)",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(vpn_platform_subscriptions_lifecycle_total{kind=\"trial\",lifecycle=\"active\",service=\"vpn-orchestrator\"})",
+          "legendFormat": "активные"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(vpn_platform_subscriptions_lifecycle_total{kind=\"trial\",lifecycle=\"expired\",service=\"vpn-orchestrator\"})",
+          "legendFormat": "истёкшие"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "purple", "value": null }]
+          },
+          "color": { "mode": "fixed", "fixedColor": "purple" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "истёкшие" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }]
+          }
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Подписки (активные / истёкшие)",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(vpn_platform_subscriptions_lifecycle_total{kind=\"paid\",lifecycle=\"active\",service=\"vpn-orchestrator\"})",
+          "legendFormat": "активные"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(vpn_platform_subscriptions_lifecycle_total{kind=\"paid\",lifecycle=\"expired\",service=\"vpn-orchestrator\"})",
+          "legendFormat": "истёкшие"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          },
+          "color": { "mode": "fixed", "fixedColor": "green" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "истёкшие" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+          }
+        ]
+      }
+    },
+    {
       "type": "stat",
       "title": "Ноды живы / всего",
       "id": 4,

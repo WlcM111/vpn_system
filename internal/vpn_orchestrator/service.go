@@ -114,6 +114,11 @@ func (s *Service) RenderSubscriptionFeedDetailed(ctx context.Context, token stri
 	// обычных конфигов. Пользователь импортирует одну ссылку подписки.
 	lines = append(lines, s.cdnLinesForFeed(ctx, feedItems)...)
 
+	// gRPC-конфигурации — аналогично CDN: для каждого сервера подбирается gRPC-
+	// эндпоинт и добавляется в тот же фид. Так пользователь получает три транспорта
+	// (WS + XHTTP-CDN + gRPC) по одной ссылке подписки.
+	lines = append(lines, s.grpcLinesForFeed(ctx, feedItems)...)
+
 	feed := strings.Join(lines, "\n") + "\n"
 	contentType := "text/plain; charset=utf-8"
 
@@ -202,9 +207,9 @@ func (s *Service) selectBalancedItems(ctx context.Context, telegramID int64) ([]
 // для сервера подобран CDN-эндпоинт. Дедуп по (inbound_tag|email): если CDN-inbound
 // совпал с основным — второй профиль не добавляется. Единый источник логики для
 // publishSyncCommands и publishRevokeCommands (IM-2: убирает дублирование).
-func (s *Service) buildUserProfiles(base kafkacontracts.VPNNodeUserProfile, serverKey string, cdnEndpoints []CDNEndpoint) []kafkacontracts.VPNNodeUserProfile {
-	seen := make(map[string]struct{}, 2)
-	out := make([]kafkacontracts.VPNNodeUserProfile, 0, 2)
+func (s *Service) buildUserProfiles(base kafkacontracts.VPNNodeUserProfile, serverKey string, cdnEndpoints []CDNEndpoint, grpcEndpoints []GRPCEndpoint) []kafkacontracts.VPNNodeUserProfile {
+	seen := make(map[string]struct{}, 3)
+	out := make([]kafkacontracts.VPNNodeUserProfile, 0, 3)
 	add := func(p kafkacontracts.VPNNodeUserProfile) {
 		key := p.InboundTag + "|" + p.Email
 		if _, ok := seen[key]; ok {
@@ -225,6 +230,20 @@ func (s *Service) buildUserProfiles(base kafkacontracts.VPNNodeUserProfile, serv
 		cdnProfile.InboundTag = cdnInbound
 		cdnProfile.Optional = true
 		add(cdnProfile)
+	}
+
+	// gRPC: регистрируем того же пользователя в gRPC-inbound, чтобы gRPC-ссылка из
+	// фида работала. Optional=true — если на узле нет gRPC-inbound, node-agent
+	// пропустит профиль без провала всей команды (симметрично CDN).
+	if endpoint, ok := selectGRPCForServer(grpcEndpoints, serverKey); ok {
+		grpcInbound := endpoint.InboundTag
+		if grpcInbound == "" {
+			grpcInbound = "vless-grpc-cdn-in"
+		}
+		grpcProfile := base
+		grpcProfile.InboundTag = grpcInbound
+		grpcProfile.Optional = true
+		add(grpcProfile)
 	}
 
 	return out
@@ -255,6 +274,14 @@ func (s *Service) publishSyncCommands(ctx context.Context, access *AccessState, 
 		cdnEndpoints = nil
 	}
 
+	// gRPC-эндпоинты — аналогично CDN: нужно зарегистрировать UUID пользователя в
+	// gRPC-inbound, иначе gRPC-ссылка из фида не работает.
+	grpcEndpoints, grpcErr := s.repo.ListEnabledGRPCEndpoints(ctx)
+	if grpcErr != nil {
+		log.Printf("publishSyncCommands: load grpc endpoints failed: %v", grpcErr)
+		grpcEndpoints = nil
+	}
+
 	for nodeID, nodeItems := range byNode {
 		profiles := make([]kafkacontracts.VPNNodeUserProfile, 0, len(nodeItems)*2)
 		for _, item := range nodeItems {
@@ -270,7 +297,7 @@ func (s *Service) publishSyncCommands(ctx context.Context, access *AccessState, 
 				Level:       item.PoolItem.Level,
 				AccessUntil: access.AccessUntil,
 			}
-			profiles = append(profiles, s.buildUserProfiles(base, item.PoolItem.ServerKey, cdnEndpoints)...)
+			profiles = append(profiles, s.buildUserProfiles(base, item.PoolItem.ServerKey, cdnEndpoints, grpcEndpoints)...)
 		}
 
 		cmd := kafkacontracts.NodeSyncUserCommand{
@@ -333,6 +360,14 @@ func (s *Service) publishRevokeCommands(ctx context.Context, telegramID int64, a
 		revokeCDNEndpoints = nil
 	}
 
+	// Те же gRPC-эндпоинты, что и при выдаче: отзываем доступ и из gRPC-inbound,
+	// чтобы на узле не оставалось активного UUID после потери доступа.
+	revokeGRPCEndpoints, revokeGRPCErr := s.repo.ListEnabledGRPCEndpoints(ctx)
+	if revokeGRPCErr != nil {
+		log.Printf("publishRevokeCommands: load grpc endpoints failed: %v", revokeGRPCErr)
+		revokeGRPCEndpoints = nil
+	}
+
 	for nodeID, nodeCreds := range byNode {
 		profiles := make([]kafkacontracts.VPNNodeUserProfile, 0, len(nodeCreds)*2)
 		for _, cred := range nodeCreds {
@@ -342,7 +377,7 @@ func (s *Service) publishRevokeCommands(ctx context.Context, telegramID int64, a
 				Email:      cred.Email,
 				VLESSUUID:  cred.VLESSUUID,
 			}
-			profiles = append(profiles, s.buildUserProfiles(base, cred.ServerKey, revokeCDNEndpoints)...)
+			profiles = append(profiles, s.buildUserProfiles(base, cred.ServerKey, revokeCDNEndpoints, revokeGRPCEndpoints)...)
 		}
 
 		cmd := kafkacontracts.NodeRevokeUserCommand{

@@ -14,6 +14,8 @@ func (h *HTTPHandlers) RegisterAdmin(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/pool-items", h.withAdminAuth(h.handleAdminPoolItems))
 	mux.HandleFunc("/admin/cdn-endpoints", h.withAdminAuth(h.handleAdminCDNEndpoints))
 	mux.HandleFunc("/admin/cdn-endpoints/", h.withAdminAuth(h.handleAdminCDNEndpointByKey))
+	mux.HandleFunc("/admin/grpc-endpoints", h.withAdminAuth(h.handleAdminGRPCEndpoints))
+	mux.HandleFunc("/admin/grpc-endpoints/", h.withAdminAuth(h.handleAdminGRPCEndpointByKey))
 	mux.HandleFunc("/admin/users/", h.withAdminAuth(h.handleAdminUserActions))
 }
 
@@ -156,6 +158,46 @@ func (h *HTTPHandlers) handleAdminCDNEndpointByKey(w http.ResponseWriter, r *htt
 		return
 	}
 	if err := h.service.repo.DeleteCDNEndpoint(r.Context(), cdnKey); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAdminGRPCEndpoints — создание/обновление gRPC-эндпоинта (POST).
+func (h *HTTPHandlers) handleAdminGRPCEndpoints(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req AdminGRPCEndpointRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.GRPCKey) == "" || strings.TrimSpace(req.Address) == "" {
+		http.Error(w, "grpc_key and address are required", http.StatusBadRequest)
+		return
+	}
+	if err := h.service.repo.UpsertAdminGRPCEndpoint(r.Context(), req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAdminGRPCEndpointByKey — удаление gRPC-эндпоинта по ключу (DELETE).
+func (h *HTTPHandlers) handleAdminGRPCEndpointByKey(w http.ResponseWriter, r *http.Request) {
+	grpcKey := strings.Trim(strings.TrimPrefix(r.URL.Path, "/admin/grpc-endpoints/"), "/")
+	if grpcKey == "" {
+		http.Error(w, "grpc_key required", http.StatusBadRequest)
+		return
+	}
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := h.service.repo.DeleteGRPCEndpoint(r.Context(), grpcKey); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

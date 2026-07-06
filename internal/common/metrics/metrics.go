@@ -59,6 +59,19 @@ var (
 		Help: "Number of user subscriptions by status.",
 	}, []string{"status"})
 
+	// Кол-во подписок по РЕАЛЬНОМУ сроку действия (а не по сырому status).
+	// kind: "trial" | "paid". lifecycle: "active" | "expired" | "total".
+	//   active  — срок ещё не истёк (expires_at > now());
+	//   expired — статус/тип соответствует, но срок уже прошёл (expires_at <= now());
+	//   total   — все строки этого kind (active + expired).
+	// Нужна, потому что истечение в системе ленивое: протухшие триалы/подписки
+	// остаются в своём status до следующего обращения к строке, из-за чего
+	// SubscriptionsByStatus{status="trial"} завышается на «спящих» протухших.
+	SubscriptionsByLifecycle = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_subscriptions_lifecycle_total",
+		Help: "User subscriptions by kind (trial/paid) and lifecycle (active/expired/total), based on expires_at vs now().",
+	}, []string{"kind", "lifecycle"})
+
 	// Кол-во активных пользователей на ноде (active_users из vpn_servers).
 	NodeActiveUsers = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "vpn_platform_node_active_users",
@@ -187,6 +200,7 @@ func init() {
 		KafkaConsumedTotal, KafkaPublishedTotal, HTTPRequestsTotal, BillingPaymentsTotal, KafkaHandlerDuration,
 		// бизнес-метрики
 		SubscriptionsByStatus,
+		SubscriptionsByLifecycle,
 		NodeActiveUsers, NodeMaxUsers, NodeLoadPercent, NodeUp, NodeHeartbeatAgeSeconds,
 		NodesCount, PoolCapacityTotal, PoolActiveTotal, PoolItemsCount,
 		CryptoInvoicesByStatus, CryptoRevenueTotal, CryptoPaidCount,
