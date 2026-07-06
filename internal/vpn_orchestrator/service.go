@@ -281,6 +281,15 @@ func (s *Service) publishSyncCommands(ctx context.Context, access *AccessState, 
 		log.Printf("publishSyncCommands: load grpc endpoints failed: %v", grpcErr)
 		grpcEndpoints = nil
 	}
+	// env-fallback (симметрично grpcLinesForFeed): если таблица пуста, но задан
+	// GRPC_ADDRESS — регистрируем пользователя в gRPC-inbound из окружения. Без
+	// этого gRPC, включённый только через env, генерирует ссылку, но не заводит
+	// UUID в inbound (профиль не долетает до узла).
+	if len(grpcEndpoints) == 0 {
+		if envEndpoint, ok := grpcEndpointFromEnv(); ok {
+			grpcEndpoints = []GRPCEndpoint{envEndpoint}
+		}
+	}
 
 	for nodeID, nodeItems := range byNode {
 		profiles := make([]kafkacontracts.VPNNodeUserProfile, 0, len(nodeItems)*2)
@@ -366,6 +375,13 @@ func (s *Service) publishRevokeCommands(ctx context.Context, telegramID int64, a
 	if revokeGRPCErr != nil {
 		log.Printf("publishRevokeCommands: load grpc endpoints failed: %v", revokeGRPCErr)
 		revokeGRPCEndpoints = nil
+	}
+	// env-fallback (симметрично выдаче): если таблица пуста, но задан GRPC_ADDRESS —
+	// отзываем и из gRPC-inbound из окружения, чтобы UUID не завис на узле.
+	if len(revokeGRPCEndpoints) == 0 {
+		if envEndpoint, ok := grpcEndpointFromEnv(); ok {
+			revokeGRPCEndpoints = []GRPCEndpoint{envEndpoint}
+		}
 	}
 
 	for nodeID, nodeCreds := range byNode {
