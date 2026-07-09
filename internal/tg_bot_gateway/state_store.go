@@ -16,6 +16,7 @@ const (
 	StepCancelSubscriptionPending Step = "cancel_subscription_pending"
 	StepConfigRequestPending      Step = "config_request_pending"
 	StepServicesMenu              Step = "services_menu"
+	StepReferralMenu              Step = "referral_menu"
 )
 
 type ChatState struct {

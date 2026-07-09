@@ -45,6 +45,11 @@ const (
 	btnBack = "⬅️ Назад"
 
 	btnGetConfig = "🔗 Получить ссылку доступа"
+
+	// Реферальная программа.
+	btnReferral       = "🎁 Реферальная программа"
+	btnReferralCopy   = "🔗 Скопировать мою ссылку"
+	btnReferralRedeem = "🎁 Получить бесплатные месяцы"
 )
 
 // ---------------------------------------------------------------------------
@@ -100,6 +105,23 @@ func mainMenuKeyboard() tgbotapi.ReplyKeyboardMarkup {
 		),
 		tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton(btnServicesInfo),
+			tgbotapi.NewKeyboardButton(btnReferral),
+		),
+	)
+}
+
+// referralMenuKeyboard — меню реферальной программы.
+func referralMenuKeyboard() tgbotapi.ReplyKeyboardMarkup {
+	return tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(btnReferralCopy),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(btnReferralRedeem),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(btnBack),
+			tgbotapi.NewKeyboardButton(btnMainMenu),
 		),
 	)
 }

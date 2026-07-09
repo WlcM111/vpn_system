@@ -18,11 +18,13 @@ import (
 )
 
 type Service struct {
-	repo           *Repository
-	producer       *commonkafka.Producer
-	publicBaseURL  string
-	defaultCountry string
-	trialDays      int
+	repo                  *Repository
+	producer              *commonkafka.Producer
+	publicBaseURL         string
+	defaultCountry        string
+	trialDays             int
+	referralUsersPerMonth int
+	referralDaysPerMonth  int
 }
 
 func NewService(repo *Repository, publicBaseURL, defaultCountry string) *Service {
@@ -43,16 +45,114 @@ func NewService(repo *Repository, publicBaseURL, defaultCountry string) *Service
 		}
 	}
 
+	// N приглашённых на 1 бесплатный месяц и длина месяца в днях — из env.
+	referralUsersPerMonth := 5
+	if raw := strings.TrimSpace(os.Getenv("REFERRAL_USERS_PER_MONTH")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			referralUsersPerMonth = n
+		}
+	}
+	referralDaysPerMonth := 30
+	if raw := strings.TrimSpace(os.Getenv("REFERRAL_DAYS_PER_MONTH")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			referralDaysPerMonth = n
+		}
+	}
+
 	return &Service{
-		repo:           repo,
-		publicBaseURL:  publicBaseURL,
-		defaultCountry: defaultCountry,
-		trialDays:      trialDays,
+		repo:                  repo,
+		publicBaseURL:         publicBaseURL,
+		defaultCountry:        defaultCountry,
+		trialDays:             trialDays,
+		referralUsersPerMonth: referralUsersPerMonth,
+		referralDaysPerMonth:  referralDaysPerMonth,
 	}
 }
 
 func (s *Service) SetProducer(producer *commonkafka.Producer) {
 	s.producer = producer
+}
+
+// HandleReferralAttribute фиксирует переход приглашённого по коду реферера (pending).
+func (s *Service) HandleReferralAttribute(ctx context.Context, cmd *kafkacontracts.ReferralAttributeCommand) error {
+	if cmd == nil || cmd.RefereeTelegramID == 0 || cmd.ReferrerCode == "" {
+		return nil
+	}
+	referrerID, attributed, err := s.repo.AttributeReferral(ctx, cmd.RefereeTelegramID, cmd.ReferrerCode)
+	if err != nil {
+		return err
+	}
+	if attributed {
+		slog.Info("referral attributed", "referrer", referrerID, "referee", cmd.RefereeTelegramID)
+	}
+	return nil
+}
+
+// HandleReferralRedeem начисляет доступные бесплатные месяцы (или сообщает, что их нет).
+func (s *Service) HandleReferralRedeem(ctx context.Context, cmd *kafkacontracts.ReferralRedeemCommand) error {
+	if cmd == nil || cmd.TelegramID == 0 {
+		return nil
+	}
+
+	tx, err := s.repo.BeginTx(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	granted, newExpiresAt, err := s.repo.RedeemReferralMonthsTx(
+		ctx, tx, cmd.TelegramID, s.defaultCountry, s.referralUsersPerMonth, s.referralDaysPerMonth,
+	)
+	if err != nil {
+		return err
+	}
+
+	if granted == 0 {
+		if nErr := s.notifyTx(ctx, tx, kafkacontracts.TgNotification{
+			TelegramID: cmd.TelegramID,
+			ParseMode:  "Markdown",
+			Message: fmt.Sprintf(
+				"У вас пока нет доступных бесплатных месяцев.\n\n"+
+					"Приглашайте друзей: за каждые *%d* оплативших подписку — *1 месяц* бесплатно.",
+				s.referralUsersPerMonth,
+			),
+		}); nErr != nil {
+			return nErr
+		}
+		return tx.Commit(ctx)
+	}
+
+	if nErr := s.notifyTx(ctx, tx, kafkacontracts.TgNotification{
+		TelegramID: cmd.TelegramID,
+		ParseMode:  "Markdown",
+		Message: fmt.Sprintf(
+			"🎁 Начислено бесплатных месяцев: *%d*!\n\nПодписка активна до *%s*.",
+			granted, newExpiresAt.Format("02.01.2006"),
+		),
+	}); nErr != nil {
+		return nErr
+	}
+
+	// Событие активации — чтобы оркестратор продлил доступ на нодах под новый срок.
+	// Читаем актуальное состояние в той же транзакции.
+	state, stErr := s.repo.getStateForUpdateTx(ctx, tx, cmd.TelegramID)
+	if stErr == nil && state != nil && state.ExpiresAt != nil {
+		if evErr := s.publishSubscriptionEventTx(ctx, tx, &kafkacontracts.SubscriptionActivatedEvent{
+			Type:        kafkacontracts.SubscriptionEventActivated,
+			TelegramID:  cmd.TelegramID,
+			PlanCode:    state.CurrentPlanCode,
+			ActivatedAt: time.Now().UTC(),
+			ActiveUntil: *state.ExpiresAt,
+			DaysLeft:    state.DaysLeft,
+			Country:     state.CountryCode,
+			Source:      "referral_reward",
+			AccessRev:   state.AccessRev,
+		}); evErr != nil {
+			return evErr
+		}
+	}
+
+	return tx.Commit(ctx)
 }
 
 func normalizeBaseURL(v string) string {
@@ -267,6 +367,24 @@ func (s *Service) HandleBillingPaymentSucceeded(ctx context.Context, event *kafk
 	if !applied {
 		slog.Info("user-subscription duplicate payment ignored", "telegram_id", event.TelegramID, "payment_id", event.PaymentID)
 		return tx.Commit(ctx)
+	}
+
+	// Реферальная атрибуция: если пользователь был приглашён и это его ПЕРВАЯ платная
+	// активация (applied=true), засчитываем конверсию рефереру в той же транзакции —
+	// атомарно и ровно один раз. Триал сюда не попадает (для него ActivatePaidTx не
+	// вызывается). Ошибка реферальной логики не должна ломать активацию: логируем.
+	if referrerID, converted, refErr := s.repo.MarkReferralConvertedTx(ctx, tx, event.TelegramID); refErr != nil {
+		slog.Error("referral conversion failed", "err", refErr, "referee", event.TelegramID)
+	} else if converted {
+		slog.Info("referral converted", "referrer", referrerID, "referee", event.TelegramID)
+		if nErr := s.notifyTx(ctx, tx, kafkacontracts.TgNotification{
+			TelegramID: referrerID,
+			ParseMode:  "Markdown",
+			Message: "🎉 По вашей реферальной ссылке оформлена подписка!\n\n" +
+				"Загляните в раздел *Реферальная программа* — возможно, доступен бесплатный месяц.",
+		}); nErr != nil {
+			slog.Error("notify referrer failed", "err", nErr, "referrer", referrerID)
+		}
 	}
 
 	if state.ExpiresAt != nil {

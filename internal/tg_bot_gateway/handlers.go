@@ -43,7 +43,11 @@ func (a *App) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 	log.Printf("[tg-bot] update chat=%d user=%s step=%s text=%q msg_id=%d",
 		chatID, username, state.Step, text, msg.MessageID)
 
-	if text == "/start" {
+	if text == "/start" || strings.HasPrefix(text, "/start ") {
+		// Deep-link реферала: /start ref_<code>. Фиксируем переход до показа меню.
+		if arg := strings.TrimSpace(strings.TrimPrefix(text, "/start")); arg != "" {
+			a.handleReferralStartParam(ctx, chatID, arg)
+		}
 		a.handleStart(ctx, chatID, state)
 		return
 	}
@@ -60,6 +64,8 @@ func (a *App) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 		a.handleBuyMenuChoice(ctx, chatID, state, text)
 	case StepServicesMenu:
 		a.handleServicesMenuChoice(ctx, chatID, state, text)
+	case StepReferralMenu:
+		a.handleReferralMenuChoice(ctx, chatID, state, text)
 	default:
 		a.handleMainMenuChoice(ctx, chatID, state, text)
 	}
@@ -124,6 +130,9 @@ func (a *App) handleMainMenuChoice(ctx context.Context, chatID int64, state *Cha
 
 	case btnServicesInfo:
 		a.handleServicesInfo(ctx, chatID, state)
+
+	case btnReferral:
+		a.handleReferralMenu(ctx, chatID, state)
 
 	default:
 		// Любое непонятное сообщение — возвращаем пользователя в главное меню.

@@ -59,6 +59,20 @@ func RunSubscriptionCommandsConsumer(ctx context.Context, reader *kafkago.Reader
 					}
 					return svc.HandleCancel(opCtx, &cmd)
 
+				case string(kafkacontracts.SubscriptionCommandReferralAttribute):
+					var cmd kafkacontracts.ReferralAttributeCommand
+					if err := json.Unmarshal(msg.Value, &cmd); err != nil {
+						return commonkafka.ErrSkip
+					}
+					return svc.HandleReferralAttribute(opCtx, &cmd)
+
+				case string(kafkacontracts.SubscriptionCommandReferralRedeem):
+					var cmd kafkacontracts.ReferralRedeemCommand
+					if err := json.Unmarshal(msg.Value, &cmd); err != nil {
+						return commonkafka.ErrSkip
+					}
+					return svc.HandleReferralRedeem(opCtx, &cmd)
+
 				default:
 					return commonkafka.ErrSkip
 				}

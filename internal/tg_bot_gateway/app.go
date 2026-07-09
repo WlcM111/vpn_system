@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,8 @@ type App struct {
 	pgPool    *pgxpool.Pool
 	stopCh    chan struct{}
 	documents *documentsStore
+
+	referralUsersPerMonth int // N приглашённых на 1 месяц (для показа на экране)
 }
 
 type chatLock struct {
@@ -155,17 +158,25 @@ func NewApp() (*App, error) {
 
 	appCtx, appCancel := context.WithCancel(context.Background())
 
+	referralUsersPerMonth := 5
+	if raw := strings.TrimSpace(os.Getenv("REFERRAL_USERS_PER_MONTH")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			referralUsersPerMonth = n
+		}
+	}
+
 	return &App{
-		bot:               bot,
-		stateStore:        stateStore,
-		backend:           backend,
-		kafkaProducer:     kafkaProducer,
-		notificationsRead: notificationsReader,
-		stopCh:            make(chan struct{}),
-		ctx:               appCtx,
-		cancel:            appCancel,
-		pgPool:            pgPool,
-		documents:         newDocumentsStore(),
+		bot:                   bot,
+		stateStore:            stateStore,
+		backend:               backend,
+		kafkaProducer:         kafkaProducer,
+		notificationsRead:     notificationsReader,
+		stopCh:                make(chan struct{}),
+		ctx:                   appCtx,
+		cancel:                appCancel,
+		pgPool:                pgPool,
+		documents:             newDocumentsStore(),
+		referralUsersPerMonth: referralUsersPerMonth,
 	}, nil
 }
 
