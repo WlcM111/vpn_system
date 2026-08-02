@@ -35,7 +35,7 @@ func (a *App) loadReferralStats(ctx context.Context, telegramID int64) (*referra
 
 	usersPerMonth := a.referralUsersPerMonth
 	if usersPerMonth <= 0 {
-		usersPerMonth = 5
+		usersPerMonth = 1
 	}
 
 	code, err := a.ensureReferralCode(queryCtx, telegramID)

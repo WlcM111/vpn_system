@@ -46,7 +46,7 @@ func NewService(repo *Repository, publicBaseURL, defaultCountry string) *Service
 	}
 
 	// N приглашённых на 1 бесплатный месяц и длина месяца в днях — из env.
-	referralUsersPerMonth := 5
+	referralUsersPerMonth := 1
 	if raw := strings.TrimSpace(os.Getenv("REFERRAL_USERS_PER_MONTH")); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
 			referralUsersPerMonth = n
@@ -108,14 +108,17 @@ func (s *Service) HandleReferralRedeem(ctx context.Context, cmd *kafkacontracts.
 	}
 
 	if granted == 0 {
+		hint := fmt.Sprintf(
+			"Приглашайте друзей: за каждые *%d* оплативших подписку — *1 месяц* бесплатно.",
+			s.referralUsersPerMonth,
+		)
+		if s.referralUsersPerMonth == 1 {
+			hint = "Приглашайте друзей: каждый друг, оформивший платную подписку, — это *1 месяц бесплатно* для вас."
+		}
 		if nErr := s.notifyTx(ctx, tx, kafkacontracts.TgNotification{
 			TelegramID: cmd.TelegramID,
 			ParseMode:  "Markdown",
-			Message: fmt.Sprintf(
-				"У вас пока нет доступных бесплатных месяцев.\n\n"+
-					"Приглашайте друзей: за каждые *%d* оплативших подписку — *1 месяц* бесплатно.",
-				s.referralUsersPerMonth,
-			),
+			Message:    "У вас пока нет доступных бесплатных месяцев.\n\n" + hint,
 		}); nErr != nil {
 			return nErr
 		}

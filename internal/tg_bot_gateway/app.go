@@ -158,7 +158,7 @@ func NewApp() (*App, error) {
 
 	appCtx, appCancel := context.WithCancel(context.Background())
 
-	referralUsersPerMonth := 5
+	referralUsersPerMonth := 1
 	if raw := strings.TrimSpace(os.Getenv("REFERRAL_USERS_PER_MONTH")); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
 			referralUsersPerMonth = n

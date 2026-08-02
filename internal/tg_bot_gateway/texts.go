@@ -11,7 +11,7 @@ import (
 func welcomeText() string {
 	return "👋 *Добро пожаловать в House VPN!*\n" +
 		"\n" +
-		"🔐 Мы помогаем настроить защищённое сетевое соединение для безопасной передачи данных через приложения *v2RayTun*, *Happ* или *Streisand*.\n" +
+		"🔐 Мы помогаем настроить защищённое сетевое соединение для безопасной передачи данных через приложения *Happ*, *v2RayTun*, *Incy* или *Streisand*.\n" +
 		"\n" +
 		"✨ *Что можно сделать в боте:*\n" +
 		"💳 Выбрать подходящий тариф\n" +
@@ -22,31 +22,83 @@ func welcomeText() string {
 		"👇 Выберите действие в меню ниже."
 }
 
-// downloadVPNText — гайд «как скачать клиенты». Текст и ссылки на приложения
-// пользователь заполняет сам. Ниже — каркас с плейсхолдерами для трёх клиентов.
+// ----------------------------------------------------------------------------
+// Ссылки на клиентские приложения.
+//
+// Ссылки магазинов (App Store / Google Play) — стабильные идентификаторы
+// приложений, поэтому заданы константами: конфигурацией они не являются.
+// Ссылки на сайты (нужны для ПК) можно переопределить через .env (APP_LINK_*);
+// если переменная пустая, используется рабочее значение по умолчанию.
+//
+// Важно: Streisand существует только в экосистеме Apple (iPhone/iPad/Mac),
+// версии для Android не существует — в Android-блоке его нет намеренно.
+// У Happ два разных приложения в App Store: глобальное и российское.
+// ----------------------------------------------------------------------------
+const (
+	// App Store — iPhone, iPad, Mac.
+	appStoreHappRus    = "https://apps.apple.com/ru/app/happ-proxy-utility/id6783623643"
+	appStoreHappGlobal = "https://apps.apple.com/us/app/happ-proxy-utility/id6504287215"
+	appStoreIncy       = "https://apps.apple.com/us/app/incy/id6756943388"
+	appStoreV2RayTun   = "https://apps.apple.com/us/app/v2raytun/id6476628951"
+	appStoreStreisand  = "https://apps.apple.com/us/app/streisand/id6450534064"
+
+	// Google Play — Android.
+	googlePlayHapp     = "https://play.google.com/store/apps/details?id=com.happproxy"
+	googlePlayV2RayTun = "https://play.google.com/store/apps/details?id=com.v2raytun.android"
+	googlePlayIncy     = "https://play.google.com/store/apps/details?id=llc.itdev.incy"
+
+	// Официальные сайты — для ПК (Windows / macOS / Linux).
+	siteHappDefault      = "https://www.happ.su/main"
+	siteIncyDefault      = "https://incy.cc/"
+	siteV2RayTunDefault  = "https://v2raytun.com/"
+	siteStreisandDefault = "https://streisandapp.com/"
+)
+
+// downloadVPNText — инструкция «как скачать клиент», разделённая на три блока:
+// Android, iPhone/iPad и компьютер. В каждом блоке — только те приложения,
+// которые реально существуют на этой платформе.
 func downloadVPNText() string {
-	return "📥 *Как скачать и установить клиент*\n\n" +
-		"Для подключения подойдёт любое из совместимых приложений: *v2RayTun*, *Happ* или *Streisand*.\n\n" +
-		"Ссылки для скачивания:\n" +
-		"• v2RayTun — " + appLinkOrPlaceholder("APP_LINK_V2RAYTUN") + "\n" +
-		"• Happ — " + appLinkOrPlaceholder("APP_LINK_HAPP") + "\n" +
-		"• Streisand — " + appLinkOrPlaceholder("APP_LINK_STREISAND") + "\n\n" +
-		"После установки:\n" +
-		"1️⃣ Открой приложение.\n" +
-		"2️⃣ Нажми ➕ и выбери импорт по ссылке (Enter link / Import from clipboard).\n" +
-		"3️⃣ Вставь ссылку-ключ, которую пришлёт бот после активации подписки.\n" +
-		"4️⃣ Подключайся 🚀"
+	return "📥 *Скачать приложение*\n\n" +
+		"Чтобы подключиться, нужен клиент. Выберите блок под своё устройство 👇\n\n" +
+		"━━━━━━━━━━━━━━━━━━\n\n" +
+		"🤖 *ANDROID*\n\n" +
+		"Установите любое приложение из Google Play — они взаимозаменяемы:\n\n" +
+		"• [Happ](" + googlePlayHapp + ") — рекомендуем\n" +
+		"• [v2RayTun](" + googlePlayV2RayTun + ")\n" +
+		"• [Incy](" + googlePlayIncy + ")\n\n" +
+		"━━━━━━━━━━━━━━━━━━\n\n" +
+		"🍎 *IPHONE / IPAD*\n\n" +
+		"⚠️ Некоторые приложения доступны не во всех регионах App Store. " +
+		"Открывайте ссылки по очереди и установите то, которое откроется в вашем магазине — " +
+		"все они работают одинаково:\n\n" +
+		"• [Happ — для России](" + appStoreHappRus + ")\n" +
+		"• [Happ — Global](" + appStoreHappGlobal + ")\n" +
+		"• [Incy](" + appStoreIncy + ")\n" +
+		"• [v2RayTun](" + appStoreV2RayTun + ")\n" +
+		"• [Streisand](" + appStoreStreisand + ")\n\n" +
+		"━━━━━━━━━━━━━━━━━━\n\n" +
+		"💻 *КОМПЬЮТЕР* (Windows, macOS, Linux)\n\n" +
+		"Откройте сайт приложения и скачайте версию для своей системы:\n\n" +
+		"• [Happ](" + appLink("APP_LINK_HAPP", siteHappDefault) + ") — Windows, macOS, Linux\n" +
+		"• [Incy](" + appLink("APP_LINK_INCY", siteIncyDefault) + ") — Windows, macOS, Linux\n" +
+		"• [v2RayTun](" + appLink("APP_LINK_V2RAYTUN", siteV2RayTunDefault) + ") — Windows, macOS\n" +
+		"• [Streisand](" + appLink("APP_LINK_STREISAND", siteStreisandDefault) + ") — только macOS\n\n" +
+		"━━━━━━━━━━━━━━━━━━\n\n" +
+		"📲 *Как подключиться*\n\n" +
+		"1️⃣ Установите приложение\n" +
+		"2️⃣ В меню бота нажмите «🔗 Получить ссылку доступа» и скопируйте её\n" +
+		"3️⃣ В приложении нажмите ➕ и выберите «Добавить из буфера обмена»\n" +
+		"4️⃣ Выберите сервер и подключайтесь 🚀\n\n" +
+		"💬 Что-то не получается? Напишите в поддержку — поможем."
 }
 
-// appLinkOrPlaceholder возвращает ссылку на приложение из env или плейсхолдер.
-// Так ты можешь задать ссылки через .env, не пересобирая бот; либо вписать прямо
-// в этот файл вместо вызова.
-func appLinkOrPlaceholder(envKey string) string {
-	v := strings.TrimSpace(os.Getenv(envKey))
-	if v == "" {
-		return "(ссылка скоро будет добавлена)"
+// appLink возвращает ссылку из переменной окружения, а если она не задана —
+// рабочее значение по умолчанию. Так пользователь никогда не увидит заглушку.
+func appLink(envKey, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(envKey)); v != "" {
+		return v
 	}
-	return v
+	return fallback
 }
 
 // supportText — контакты поддержки.

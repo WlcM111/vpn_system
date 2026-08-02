@@ -296,6 +296,19 @@ func (r *Repository) EnsureCredentialsForItems(ctx context.Context, telegramID i
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	out, err := r.EnsureCredentialsForItemsTx(ctx, tx, telegramID, accessRev, items)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit tx: %w", err)
+	}
+	return out, nil
+}
+
+// EnsureCredentialsForItemsTx — тело EnsureCredentialsForItems, но в переданной
+// транзакции, без собственных Begin/Commit (C1).
+func (r *Repository) EnsureCredentialsForItemsTx(ctx context.Context, tx pgx.Tx, telegramID int64, accessRev int64, items []PoolItem) ([]FeedItem, error) {
 	out := make([]FeedItem, 0, len(items))
 	for _, item := range items {
 		newUUID := uuid.NewString()
@@ -349,9 +362,6 @@ func (r *Repository) EnsureCredentialsForItems(ctx context.Context, telegramID i
 		})
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit tx: %w", err)
-	}
 	return out, nil
 }
 
@@ -362,6 +372,20 @@ func (r *Repository) DisableUserCredentials(ctx context.Context, telegramID int6
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	out, err := r.DisableUserCredentialsTx(ctx, tx, telegramID, accessRev)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit tx: %w", err)
+	}
+	return out, nil
+}
+
+// DisableUserCredentialsTx — тело DisableUserCredentials в переданной транзакции,
+// без собственных Begin/Commit (C1).
+func (r *Repository) DisableUserCredentialsTx(ctx context.Context, tx pgx.Tx, telegramID int64, accessRev int64) ([]UserCredential, error) {
 	rows, err := tx.Query(ctx, `
 		UPDATE vpn_user_node_credentials
 		SET enabled = false,
@@ -399,9 +423,6 @@ func (r *Repository) DisableUserCredentials(ctx context.Context, telegramID int6
 		}
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit tx: %w", err)
-	}
 	return out, nil
 }
 
@@ -436,6 +457,39 @@ func (r *Repository) UpsertAccessProjection(ctx context.Context, state *AccessSt
 	return nil
 }
 
+// UpsertAccessProjectionTx — то же, что UpsertAccessProjection, но в переданной
+// транзакции (C1: отметка инбокса и сайд-эффект в одной tx).
+func (r *Repository) UpsertAccessProjectionTx(ctx context.Context, tx pgx.Tx, state *AccessState, eventType string, eventAt time.Time) error {
+	if state == nil {
+		return nil
+	}
+	if state.CountryCode == "" {
+		state.CountryCode = "ALL"
+	}
+
+	_, err := tx.Exec(ctx, `
+		INSERT INTO vpn_user_access (
+			telegram_id, status, access_until, grace_until, access_rev,
+			country_code, last_event_type, last_event_at
+		)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		ON CONFLICT (telegram_id) DO UPDATE SET
+			status = EXCLUDED.status,
+			access_until = EXCLUDED.access_until,
+			grace_until = EXCLUDED.grace_until,
+			access_rev = EXCLUDED.access_rev,
+			country_code = EXCLUDED.country_code,
+			last_event_type = EXCLUDED.last_event_type,
+			last_event_at = EXCLUDED.last_event_at,
+			updated_at = now()
+		WHERE vpn_user_access.access_rev <= EXCLUDED.access_rev
+	`, state.TelegramID, state.Status, state.AccessUntil, state.GraceUntil, state.AccessRev, state.CountryCode, eventType, eventAt.UTC())
+	if err != nil {
+		return fmt.Errorf("upsert access projection tx: %w", err)
+	}
+	return nil
+}
+
 func (r *Repository) UpdateNodeHeartbeat(ctx context.Context, nodeID string, serverKey string, at time.Time) error {
 	_, err := r.pool.Exec(ctx, `
 		UPDATE vpn_servers
@@ -450,6 +504,21 @@ func (r *Repository) UpdateNodeHeartbeat(ctx context.Context, nodeID string, ser
 	return nil
 }
 
+// UpdateNodeHeartbeatTx — версия для транзакции (C1).
+func (r *Repository) UpdateNodeHeartbeatTx(ctx context.Context, tx pgx.Tx, nodeID string, serverKey string, at time.Time) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE vpn_servers
+		SET last_heartbeat_at = $3,
+		    updated_at = now()
+		WHERE node_id = $1
+		  AND ($2 = '' OR server_key = $2)
+	`, nodeID, serverKey, at.UTC())
+	if err != nil {
+		return fmt.Errorf("update node heartbeat tx: %w", err)
+	}
+	return nil
+}
+
 func (r *Repository) SaveNodeSyncResult(ctx context.Context, nodeID, serverKey string, telegramID int64, accessRev int64, commandID, eventType string, success bool, errText string) error {
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO vpn_node_sync_results (
@@ -460,6 +529,21 @@ func (r *Repository) SaveNodeSyncResult(ctx context.Context, nodeID, serverKey s
 	`, nodeID, serverKey, telegramID, accessRev, commandID, eventType, success, errText)
 	if err != nil {
 		return fmt.Errorf("save node sync result: %w", err)
+	}
+	return nil
+}
+
+// SaveNodeSyncResultTx — версия для транзакции (C1).
+func (r *Repository) SaveNodeSyncResultTx(ctx context.Context, tx pgx.Tx, nodeID, serverKey string, telegramID int64, accessRev int64, commandID, eventType string, success bool, errText string) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO vpn_node_sync_results (
+			node_id, server_key, telegram_id, access_rev,
+			command_id, event_type, success, error
+		)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+	`, nodeID, serverKey, telegramID, accessRev, commandID, eventType, success, errText)
+	if err != nil {
+		return fmt.Errorf("save node sync result tx: %w", err)
 	}
 	return nil
 }
@@ -561,6 +645,22 @@ func (r *Repository) UpsertUserTraffic(ctx context.Context, telegramID, uplink, 
 	return nil
 }
 
+// UpsertUserTrafficTx — версия для транзакции (C1).
+func (r *Repository) UpsertUserTrafficTx(ctx context.Context, tx pgx.Tx, telegramID, uplink, downlink int64) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO vpn_user_traffic (telegram_id, uplink, downlink, updated_at)
+		VALUES ($1, $2, $3, now())
+		ON CONFLICT (telegram_id) DO UPDATE SET
+			uplink = GREATEST(vpn_user_traffic.uplink, EXCLUDED.uplink),
+			downlink = GREATEST(vpn_user_traffic.downlink, EXCLUDED.downlink),
+			updated_at = now()
+	`, telegramID, uplink, downlink)
+	if err != nil {
+		return fmt.Errorf("upsert user traffic tx tg=%d: %w", telegramID, err)
+	}
+	return nil
+}
+
 // GetUserTraffic возвращает трафик пользователя. Если записи нет — нули (не ошибка).
 func (r *Repository) GetUserTraffic(ctx context.Context, telegramID int64) (UserTrafficRow, error) {
 	var row UserTrafficRow
@@ -632,6 +732,23 @@ func (r *Repository) MarkCredentialsSynced(ctx context.Context, telegramID int64
 	`, telegramID, accessRev, nodeID)
 	if err != nil {
 		return fmt.Errorf("mark credentials synced: %w", err)
+	}
+	return nil
+}
+
+// MarkCredentialsSyncedTx — версия для транзакции (C1).
+func (r *Repository) MarkCredentialsSyncedTx(ctx context.Context, tx pgx.Tx, telegramID int64, accessRev int64, nodeID string) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE vpn_user_node_credentials
+		SET last_synced_rev = GREATEST(last_synced_rev, $2),
+		    last_synced_at = now(),
+		    updated_at = now()
+		WHERE telegram_id = $1
+		  AND access_rev <= $2
+		  AND node_id = $3
+	`, telegramID, accessRev, nodeID)
+	if err != nil {
+		return fmt.Errorf("mark credentials synced tx: %w", err)
 	}
 	return nil
 }

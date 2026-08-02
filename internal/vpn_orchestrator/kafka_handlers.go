@@ -11,6 +11,7 @@ import (
 	"vpn-platform/internal/common/outbox"
 	kafkacontracts "vpn-platform/internal/contracts/kafka"
 
+	"github.com/jackc/pgx/v5"
 	kafkago "github.com/segmentio/kafka-go"
 )
 
@@ -36,7 +37,7 @@ func RunSubscriptionEventsConsumer(ctx context.Context, reader *kafkago.Reader, 
 				return commonkafka.ErrSkip
 			}
 
-			return processOrchestratorMessageOnce(ctx, service, msg, envelope.Type, envelope.CommandID, envelope.PaymentID, envelope.OrderID, func(opCtx context.Context) error {
+			return processOrchestratorMessageOnce(ctx, service, msg, envelope.Type, envelope.CommandID, envelope.PaymentID, envelope.OrderID, func(opCtx context.Context, tx pgx.Tx) error {
 				switch envelope.Type {
 				case string(kafkacontracts.SubscriptionEventTrialStarted):
 					var event kafkacontracts.SubscriptionTrialStartedEvent
@@ -44,7 +45,7 @@ func RunSubscriptionEventsConsumer(ctx context.Context, reader *kafkago.Reader, 
 						slog.Warn("vpn-orchestrator invalid trial_started event", "err", err)
 						return commonkafka.ErrSkip
 					}
-					return service.ApplyTrialStarted(opCtx, &event)
+					return service.ApplyTrialStarted(opCtx, tx, &event)
 
 				case string(kafkacontracts.SubscriptionEventActivated):
 					var event kafkacontracts.SubscriptionActivatedEvent
@@ -52,7 +53,7 @@ func RunSubscriptionEventsConsumer(ctx context.Context, reader *kafkago.Reader, 
 						slog.Warn("vpn-orchestrator invalid activated event", "err", err)
 						return commonkafka.ErrSkip
 					}
-					return service.ApplyActivated(opCtx, &event)
+					return service.ApplyActivated(opCtx, tx, &event)
 
 				case string(kafkacontracts.SubscriptionEventCanceled):
 					var event kafkacontracts.SubscriptionCanceledEvent
@@ -60,7 +61,7 @@ func RunSubscriptionEventsConsumer(ctx context.Context, reader *kafkago.Reader, 
 						slog.Warn("vpn-orchestrator invalid canceled event", "err", err)
 						return commonkafka.ErrSkip
 					}
-					return service.ApplyCanceled(opCtx, &event)
+					return service.ApplyCanceled(opCtx, tx, &event)
 
 				case string(kafkacontracts.SubscriptionEventGraceStarted):
 					var event kafkacontracts.SubscriptionGraceStartedEvent
@@ -68,7 +69,7 @@ func RunSubscriptionEventsConsumer(ctx context.Context, reader *kafkago.Reader, 
 						slog.Warn("vpn-orchestrator invalid grace_started event", "err", err)
 						return commonkafka.ErrSkip
 					}
-					return service.ApplyGraceStarted(opCtx, &event)
+					return service.ApplyGraceStarted(opCtx, tx, &event)
 
 				case string(kafkacontracts.SubscriptionEventSuspended):
 					var event kafkacontracts.SubscriptionSuspendedEvent
@@ -76,7 +77,7 @@ func RunSubscriptionEventsConsumer(ctx context.Context, reader *kafkago.Reader, 
 						slog.Warn("vpn-orchestrator invalid suspended event", "err", err)
 						return commonkafka.ErrSkip
 					}
-					return service.ApplySuspended(opCtx, &event)
+					return service.ApplySuspended(opCtx, tx, &event)
 
 				default:
 					slog.Debug("vpn-orchestrator ignored subscription event", "type", envelope.Type)
@@ -111,7 +112,7 @@ func RunVPNEventsConsumer(ctx context.Context, reader *kafkago.Reader, service *
 				return commonkafka.ErrSkip
 			}
 
-			return processOrchestratorMessageOnce(ctx, service, msg, envelope.Type, envelope.CommandID, envelope.PaymentID, envelope.OrderID, func(opCtx context.Context) error {
+			return processOrchestratorMessageOnce(ctx, service, msg, envelope.Type, envelope.CommandID, envelope.PaymentID, envelope.OrderID, func(opCtx context.Context, tx pgx.Tx) error {
 				switch envelope.Type {
 				case string(kafkacontracts.VPNEventNodeHeartbeat):
 					var event kafkacontracts.VPNNodeHeartbeatEvent
@@ -119,7 +120,7 @@ func RunVPNEventsConsumer(ctx context.Context, reader *kafkago.Reader, service *
 						slog.Warn("vpn-orchestrator invalid heartbeat event", "err", err)
 						return commonkafka.ErrSkip
 					}
-					return service.ApplyNodeHeartbeat(opCtx, &event)
+					return service.ApplyNodeHeartbeat(opCtx, tx, &event)
 
 				case string(kafkacontracts.VPNEventNodeUserSynced):
 					var event kafkacontracts.VPNNodeUserSyncedEvent
@@ -127,7 +128,7 @@ func RunVPNEventsConsumer(ctx context.Context, reader *kafkago.Reader, service *
 						slog.Warn("vpn-orchestrator invalid user_synced event", "err", err)
 						return commonkafka.ErrSkip
 					}
-					return service.ApplyNodeUserSynced(opCtx, &event)
+					return service.ApplyNodeUserSynced(opCtx, tx, &event)
 
 				case string(kafkacontracts.VPNEventNodeUserRevoked):
 					var event kafkacontracts.VPNNodeUserRevokedEvent
@@ -135,7 +136,7 @@ func RunVPNEventsConsumer(ctx context.Context, reader *kafkago.Reader, service *
 						slog.Warn("vpn-orchestrator invalid user_revoked event", "err", err)
 						return commonkafka.ErrSkip
 					}
-					return service.ApplyNodeUserRevoked(opCtx, &event)
+					return service.ApplyNodeUserRevoked(opCtx, tx, &event)
 
 				case string(kafkacontracts.VPNEventNodeTraffic):
 					var event kafkacontracts.VPNNodeTrafficEvent
@@ -143,7 +144,7 @@ func RunVPNEventsConsumer(ctx context.Context, reader *kafkago.Reader, service *
 						slog.Warn("vpn-orchestrator invalid node_traffic event", "err", err)
 						return commonkafka.ErrSkip
 					}
-					return service.ApplyNodeTraffic(opCtx, &event)
+					return service.ApplyNodeTraffic(opCtx, tx, &event)
 
 				case string(kafkacontracts.VPNEventNodeError):
 					var event kafkacontracts.VPNNodeErrorEvent
@@ -151,7 +152,7 @@ func RunVPNEventsConsumer(ctx context.Context, reader *kafkago.Reader, service *
 						slog.Warn("vpn-orchestrator invalid node_error event", "err", err)
 						return commonkafka.ErrSkip
 					}
-					return service.ApplyNodeError(opCtx, &event)
+					return service.ApplyNodeError(opCtx, tx, &event)
 
 				default:
 					slog.Debug("vpn-orchestrator ignored vpn event", "type", envelope.Type)
@@ -169,7 +170,7 @@ func processOrchestratorMessageOnce(
 	svc *Service,
 	msg commonkafka.Message,
 	eventType, commandID, paymentID, orderID string,
-	handle func(opCtx context.Context) error,
+	handle func(opCtx context.Context, tx pgx.Tx) error,
 ) error {
 	messageID := commandID
 	if messageID == "" && paymentID != "" {
@@ -199,7 +200,7 @@ func processOrchestratorMessageOnce(
 	opCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
-	if err := handle(opCtx); err != nil {
+	if err := handle(opCtx, tx); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

@@ -171,7 +171,7 @@ services:
         condition: service_completed_successfully
     environment:
       TRIAL_DAYS: ${TRIAL_DAYS:-1}
-      REFERRAL_USERS_PER_MONTH: ${REFERRAL_USERS_PER_MONTH:-5}
+      REFERRAL_USERS_PER_MONTH: ${REFERRAL_USERS_PER_MONTH:-1}
       REFERRAL_DAYS_PER_MONTH: ${REFERRAL_DAYS_PER_MONTH:-30}
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       KAFKA_BROKERS: kafka:9092
@@ -327,7 +327,7 @@ services:
       NO_PROXY: kafka,postgres,redis,localhost,127.0.0.1,billing-service,user-subscription-service,vpn-orchestrator-service,crypto-billing-service
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TG_ALLOW_MOCK_BACKEND: ${TG_ALLOW_MOCK_BACKEND:-false}
-      REFERRAL_USERS_PER_MONTH: ${REFERRAL_USERS_PER_MONTH:-5}
+      REFERRAL_USERS_PER_MONTH: ${REFERRAL_USERS_PER_MONTH:-1}
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       KAFKA_BROKERS: kafka:9092
       REDIS_ADDR: redis:6379
@@ -346,6 +346,7 @@ services:
       APP_LINK_V2RAYTUN: ${APP_LINK_V2RAYTUN:-}
       APP_LINK_HAPP: ${APP_LINK_HAPP:-}
       APP_LINK_STREISAND: ${APP_LINK_STREISAND:-}
+      APP_LINK_INCY: ${APP_LINK_INCY:-}
       APP_ENV: ${APP_ENV:-}
     ports:
       - "127.0.0.1:8085:8085"

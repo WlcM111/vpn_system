@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	commonkafka "vpn-platform/internal/common/kafka"
 	commonmetrics "vpn-platform/internal/common/metrics"
@@ -146,19 +147,44 @@ func accessAllowed(state *AccessState, now time.Time) bool {
 	}
 }
 
-func (s *Service) ensureUserCredentialsAndSync(ctx context.Context, access *AccessState) ([]FeedItem, error) {
+func (s *Service) ensureUserCredentialsAndSyncTx(ctx context.Context, tx pgx.Tx, access *AccessState) ([]FeedItem, error) {
 	items, err := s.selectBalancedItems(ctx, access.TelegramID)
 	if err != nil {
 		return nil, err
 	}
 
-	feedItems, err := s.repo.EnsureCredentialsForItems(ctx, access.TelegramID, access.AccessRev, items)
+	feedItems, err := s.repo.EnsureCredentialsForItemsTx(ctx, tx, access.TelegramID, access.AccessRev, items)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := s.publishSyncCommands(ctx, access, feedItems); err != nil {
-		log.Printf("[vpn-orchestrator] publish sync commands error telegram_id=%d err=%v", access.TelegramID, err)
+	// C1: публикация команд синхронизации — в той же транзакции. Ошибку публикации
+	// теперь ВОЗВРАЩАЕМ (а не только логируем): при провале вся транзакция
+	// откатывается, сообщение переобработается — так outbox-команда не потеряется.
+	if err := s.publishSyncCommands(ctx, tx, access, feedItems); err != nil {
+		return nil, fmt.Errorf("publish sync commands tg=%d: %w", access.TelegramID, err)
+	}
+	return feedItems, nil
+}
+
+// ensureUserCredentialsAndSync — обёртка над Tx-версией для вызовов ВНЕ инбокс-
+// транзакции (admin HTTP, reconcile-воркер): открывает собственную транзакцию,
+// делегирует в ...Tx, коммитит. Так C1-атомарность (креды + outbox-команда)
+// сохраняется и для этих путей.
+func (s *Service) ensureUserCredentialsAndSync(ctx context.Context, access *AccessState) ([]FeedItem, error) {
+	tx, err := s.repo.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	feedItems, err := s.ensureUserCredentialsAndSyncTx(ctx, tx, access)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit tx: %w", err)
 	}
 	return feedItems, nil
 }
@@ -249,7 +275,7 @@ func (s *Service) buildUserProfiles(base kafkacontracts.VPNNodeUserProfile, serv
 	return out
 }
 
-func (s *Service) publishSyncCommands(ctx context.Context, access *AccessState, feedItems []FeedItem) error {
+func (s *Service) publishSyncCommands(ctx context.Context, tx pgx.Tx, access *AccessState, feedItems []FeedItem) error {
 	if s.producer == nil {
 		return nil
 	}
@@ -320,10 +346,6 @@ func (s *Service) publishSyncCommands(ctx context.Context, access *AccessState, 
 			Profiles:    profiles,
 			CreatedAt:   time.Now().UTC(),
 		}
-		tx, err := s.repo.pool.Begin(ctx)
-		if err != nil {
-			return err
-		}
 		if err := outbox.AddTx(ctx, tx, outbox.Event{
 			AggregateType: "vpn-command",
 			AggregateID:   nodeID,
@@ -332,22 +354,18 @@ func (s *Service) publishSyncCommands(ctx context.Context, access *AccessState, 
 			EventType:     string(cmd.Type),
 			Payload:       &cmd,
 		}); err != nil {
-			_ = tx.Rollback(ctx)
-			return err
-		}
-		if err := tx.Commit(ctx); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Service) publishRevokeCommands(ctx context.Context, telegramID int64, accessRev int64, reason string) error {
+func (s *Service) publishRevokeCommands(ctx context.Context, tx pgx.Tx, telegramID int64, accessRev int64, reason string) error {
 	if s.producer == nil {
 		return nil
 	}
 
-	creds, err := s.repo.DisableUserCredentials(ctx, telegramID, accessRev)
+	creds, err := s.repo.DisableUserCredentialsTx(ctx, tx, telegramID, accessRev)
 	if err != nil {
 		return err
 	}
@@ -407,10 +425,6 @@ func (s *Service) publishRevokeCommands(ctx context.Context, telegramID int64, a
 			Profiles:   profiles,
 			CreatedAt:  time.Now().UTC(),
 		}
-		tx, err := s.repo.pool.Begin(ctx)
-		if err != nil {
-			return err
-		}
 		if err := outbox.AddTx(ctx, tx, outbox.Event{
 			AggregateType: "vpn-command",
 			AggregateID:   nodeID,
@@ -419,41 +433,37 @@ func (s *Service) publishRevokeCommands(ctx context.Context, telegramID int64, a
 			EventType:     string(cmd.Type),
 			Payload:       &cmd,
 		}); err != nil {
-			_ = tx.Rollback(ctx)
-			return err
-		}
-		if err := tx.Commit(ctx); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Service) ApplyTrialStarted(ctx context.Context, event *kafkacontracts.SubscriptionTrialStartedEvent) error {
+func (s *Service) ApplyTrialStarted(ctx context.Context, tx pgx.Tx, event *kafkacontracts.SubscriptionTrialStartedEvent) error {
 	if event == nil {
 		return nil
 	}
 	access := &AccessState{TelegramID: event.TelegramID, Status: "trial", AccessUntil: &event.TrialUntil, AccessRev: event.AccessRev, CountryCode: event.Country}
-	if err := s.repo.UpsertAccessProjection(ctx, access, string(event.Type), time.Now().UTC()); err != nil {
+	if err := s.repo.UpsertAccessProjectionTx(ctx, tx, access, string(event.Type), time.Now().UTC()); err != nil {
 		return err
 	}
-	_, err := s.ensureUserCredentialsAndSync(ctx, access)
+	_, err := s.ensureUserCredentialsAndSyncTx(ctx, tx, access)
 	return err
 }
 
-func (s *Service) ApplyActivated(ctx context.Context, event *kafkacontracts.SubscriptionActivatedEvent) error {
+func (s *Service) ApplyActivated(ctx context.Context, tx pgx.Tx, event *kafkacontracts.SubscriptionActivatedEvent) error {
 	if event == nil {
 		return nil
 	}
 	access := &AccessState{TelegramID: event.TelegramID, Status: "active", AccessUntil: &event.ActiveUntil, AccessRev: event.AccessRev, CountryCode: event.Country}
-	if err := s.repo.UpsertAccessProjection(ctx, access, string(event.Type), event.ActivatedAt); err != nil {
+	if err := s.repo.UpsertAccessProjectionTx(ctx, tx, access, string(event.Type), event.ActivatedAt); err != nil {
 		return err
 	}
-	_, err := s.ensureUserCredentialsAndSync(ctx, access)
+	_, err := s.ensureUserCredentialsAndSyncTx(ctx, tx, access)
 	return err
 }
 
-func (s *Service) ApplyCanceled(ctx context.Context, event *kafkacontracts.SubscriptionCanceledEvent) error {
+func (s *Service) ApplyCanceled(ctx context.Context, tx pgx.Tx, event *kafkacontracts.SubscriptionCanceledEvent) error {
 	if event == nil {
 		return nil
 	}
@@ -463,48 +473,48 @@ func (s *Service) ApplyCanceled(ctx context.Context, event *kafkacontracts.Subsc
 		status = "active"
 	}
 	access := &AccessState{TelegramID: event.TelegramID, Status: status, AccessUntil: accessUntil, AccessRev: event.AccessRev, CountryCode: "ALL"}
-	if err := s.repo.UpsertAccessProjection(ctx, access, string(event.Type), event.CanceledAt); err != nil {
+	if err := s.repo.UpsertAccessProjectionTx(ctx, tx, access, string(event.Type), event.CanceledAt); err != nil {
 		return err
 	}
 	if status == "active" {
-		_, err := s.ensureUserCredentialsAndSync(ctx, access)
+		_, err := s.ensureUserCredentialsAndSyncTx(ctx, tx, access)
 		return err
 	}
-	return s.publishRevokeCommands(ctx, event.TelegramID, event.AccessRev, "subscription_canceled")
+	return s.publishRevokeCommands(ctx, tx, event.TelegramID, event.AccessRev, "subscription_canceled")
 }
 
-func (s *Service) ApplyGraceStarted(ctx context.Context, event *kafkacontracts.SubscriptionGraceStartedEvent) error {
+func (s *Service) ApplyGraceStarted(ctx context.Context, tx pgx.Tx, event *kafkacontracts.SubscriptionGraceStartedEvent) error {
 	if event == nil {
 		return nil
 	}
 	access := &AccessState{TelegramID: event.TelegramID, Status: "grace", GraceUntil: &event.GraceUntil, AccessRev: event.AccessRev, CountryCode: "ALL"}
-	if err := s.repo.UpsertAccessProjection(ctx, access, string(event.Type), time.Now().UTC()); err != nil {
+	if err := s.repo.UpsertAccessProjectionTx(ctx, tx, access, string(event.Type), time.Now().UTC()); err != nil {
 		return err
 	}
-	_, err := s.ensureUserCredentialsAndSync(ctx, access)
+	_, err := s.ensureUserCredentialsAndSyncTx(ctx, tx, access)
 	return err
 }
 
-func (s *Service) ApplySuspended(ctx context.Context, event *kafkacontracts.SubscriptionSuspendedEvent) error {
+func (s *Service) ApplySuspended(ctx context.Context, tx pgx.Tx, event *kafkacontracts.SubscriptionSuspendedEvent) error {
 	if event == nil {
 		return nil
 	}
 	access := &AccessState{TelegramID: event.TelegramID, Status: "expired", AccessUntil: &event.SuspendedAt, AccessRev: event.AccessRev, CountryCode: "ALL"}
-	if err := s.repo.UpsertAccessProjection(ctx, access, string(event.Type), event.SuspendedAt); err != nil {
+	if err := s.repo.UpsertAccessProjectionTx(ctx, tx, access, string(event.Type), event.SuspendedAt); err != nil {
 		return err
 	}
-	return s.publishRevokeCommands(ctx, event.TelegramID, event.AccessRev, "subscription_suspended")
+	return s.publishRevokeCommands(ctx, tx, event.TelegramID, event.AccessRev, "subscription_suspended")
 }
 
-func (s *Service) ApplyNodeHeartbeat(ctx context.Context, event *kafkacontracts.VPNNodeHeartbeatEvent) error {
+func (s *Service) ApplyNodeHeartbeat(ctx context.Context, tx pgx.Tx, event *kafkacontracts.VPNNodeHeartbeatEvent) error {
 	if event == nil {
 		return nil
 	}
-	return s.repo.UpdateNodeHeartbeat(ctx, event.NodeID, event.ServerKey, event.CreatedAt)
+	return s.repo.UpdateNodeHeartbeatTx(ctx, tx, event.NodeID, event.ServerKey, event.CreatedAt)
 }
 
 // ApplyNodeTraffic сохраняет кумулятивный трафик пользователей, присланный узлом.
-func (s *Service) ApplyNodeTraffic(ctx context.Context, event *kafkacontracts.VPNNodeTrafficEvent) error {
+func (s *Service) ApplyNodeTraffic(ctx context.Context, tx pgx.Tx, event *kafkacontracts.VPNNodeTrafficEvent) error {
 	if event == nil || len(event.Items) == 0 {
 		return nil
 	}
@@ -516,7 +526,7 @@ func (s *Service) ApplyNodeTraffic(ctx context.Context, event *kafkacontracts.VP
 		if item.TelegramID == 0 {
 			continue
 		}
-		if err := s.repo.UpsertUserTraffic(ctx, item.TelegramID, item.Uplink, item.Downlink); err != nil {
+		if err := s.repo.UpsertUserTrafficTx(ctx, tx, item.TelegramID, item.Uplink, item.Downlink); err != nil {
 			return err
 		}
 		totalUplink += item.Uplink
@@ -537,29 +547,29 @@ func (s *Service) ApplyNodeTraffic(ctx context.Context, event *kafkacontracts.VP
 	return nil
 }
 
-func (s *Service) ApplyNodeUserSynced(ctx context.Context, event *kafkacontracts.VPNNodeUserSyncedEvent) error {
+func (s *Service) ApplyNodeUserSynced(ctx context.Context, tx pgx.Tx, event *kafkacontracts.VPNNodeUserSyncedEvent) error {
 	if event == nil {
 		return nil
 	}
-	if err := s.repo.SaveNodeSyncResult(ctx, event.NodeID, event.ServerKey, event.TelegramID, event.AccessRev, event.CommandID, string(event.Type), event.Success, event.Error); err != nil {
+	if err := s.repo.SaveNodeSyncResultTx(ctx, tx, event.NodeID, event.ServerKey, event.TelegramID, event.AccessRev, event.CommandID, string(event.Type), event.Success, event.Error); err != nil {
 		return err
 	}
 	if event.Success {
-		return s.repo.MarkCredentialsSynced(ctx, event.TelegramID, event.AccessRev, event.NodeID)
+		return s.repo.MarkCredentialsSyncedTx(ctx, tx, event.TelegramID, event.AccessRev, event.NodeID)
 	}
 	return nil
 }
 
-func (s *Service) ApplyNodeUserRevoked(ctx context.Context, event *kafkacontracts.VPNNodeUserRevokedEvent) error {
+func (s *Service) ApplyNodeUserRevoked(ctx context.Context, tx pgx.Tx, event *kafkacontracts.VPNNodeUserRevokedEvent) error {
 	if event == nil {
 		return nil
 	}
-	return s.repo.SaveNodeSyncResult(ctx, event.NodeID, event.ServerKey, event.TelegramID, event.AccessRev, event.CommandID, string(event.Type), event.Success, event.Error)
+	return s.repo.SaveNodeSyncResultTx(ctx, tx, event.NodeID, event.ServerKey, event.TelegramID, event.AccessRev, event.CommandID, string(event.Type), event.Success, event.Error)
 }
 
-func (s *Service) ApplyNodeError(ctx context.Context, event *kafkacontracts.VPNNodeErrorEvent) error {
+func (s *Service) ApplyNodeError(ctx context.Context, tx pgx.Tx, event *kafkacontracts.VPNNodeErrorEvent) error {
 	if event == nil {
 		return nil
 	}
-	return s.repo.SaveNodeSyncResult(ctx, event.NodeID, event.ServerKey, 0, 0, event.CommandID, string(event.Type), false, event.Error)
+	return s.repo.SaveNodeSyncResultTx(ctx, tx, event.NodeID, event.ServerKey, 0, 0, event.CommandID, string(event.Type), false, event.Error)
 }

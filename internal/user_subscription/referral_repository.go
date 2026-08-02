@@ -137,7 +137,7 @@ func (r *Repository) SumGrantedMonths(ctx context.Context, referrerID int64) (in
 // Возвращает (grantedMonths, newExpiresAt). grantedMonths=0 — нечего начислять.
 func (r *Repository) RedeemReferralMonthsTx(ctx context.Context, tx pgx.Tx, telegramID int64, country string, usersPerMonth, daysPerMonth int) (int, *time.Time, error) {
 	if usersPerMonth <= 0 {
-		usersPerMonth = 5
+		usersPerMonth = 1
 	}
 	if daysPerMonth <= 0 {
 		daysPerMonth = 30
