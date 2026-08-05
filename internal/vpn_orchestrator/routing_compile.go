@@ -160,13 +160,19 @@ type happRouting struct {
 	DomainStrategy string `json:"DomainStrategy"`
 }
 
-// happValue снимает Xray-префиксы (domain:/regexp:/full:), которые Happ-профиль
-// не использует: там домены задаются «как есть».
+// happValue нормализует значение для Happ-профиля.
+//
+// Happ передаёт значения в Xray-ядро как есть — это видно по официальному
+// примеру из документации, где в DirectSites стоит "geosite:ru" с префиксом.
+// Поэтому Xray-префиксы НЕЛЬЗЯ срезать: без "regexp:" регулярка превращается
+// в обычную доменную строку и правило перестаёт совпадать с чем-либо.
+//
+// Срезаем только "domain:" — в Xray он семантически эквивалентен записи без
+// префикса (совпадение по домену и поддоменам), так что запись становится
+// короче без изменения поведения.
 func happValue(v string) string {
-	for _, p := range []string{"domain:", "full:", "regexp:"} {
-		if strings.HasPrefix(v, p) {
-			return strings.TrimPrefix(v, p)
-		}
+	if strings.HasPrefix(v, "domain:") {
+		return strings.TrimPrefix(v, "domain:")
 	}
 	return v
 }

@@ -708,7 +708,7 @@ func (s *Service) sendLinksNotificationForClientTx(ctx context.Context, tx pgx.T
 	sb.WriteString("Срок действия: *" + expireStr + "*\n\n")
 
 	if isHapp {
-		sb.WriteString("✨ Ключ настроен автоматически: российские сайты — банки, госуслуги, маркетплейсы — пойдут напрямую, мимо VPN, и будут открываться как обычно. Включать ничего не нужно.\n\n")
+		sb.WriteString("Ключ уже настроен: при заходе на любые сайты ничего выключать не нужно — всё работает как обычно.\n\n")
 		sb.WriteString("1️⃣ Нажмите на ссылку выше — она скопируется.\n")
 		sb.WriteString("2️⃣ Откройте *Happ* или *Incy*.\n")
 		sb.WriteString("3️⃣ Нажмите ➕ → *Добавить из буфера обмена*.\n")
@@ -718,7 +718,7 @@ func (s *Service) sendLinksNotificationForClientTx(ctx context.Context, tx pgx.T
 		sb.WriteString("2️⃣ Откройте *v2RayTun* → вкладка *Connect* (или *Streisand*).\n")
 		sb.WriteString("3️⃣ Нажмите ➕ → *Enter link* / *Import from clipboard*.\n")
 		sb.WriteString("4️⃣ Вставьте ссылку и подтвердите.\n\n")
-		sb.WriteString("💡 Для полностью автоматической настройки (российские сайты мимо VPN) рекомендуем *Happ* или *Incy* — там всё применяется само.\n\n")
+		sb.WriteString("💡 Рекомендуем *Happ* или *Incy* — с ними ключ настраивается сам, ничего включать и выключать не потребуется.\n\n")
 	}
 	sb.WriteString("⚠️ Не делитесь ссылкой: она привязана к вашей подписке.")
 
