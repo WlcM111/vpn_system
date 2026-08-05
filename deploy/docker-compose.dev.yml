@@ -225,6 +225,7 @@ services:
       ORCHESTRATOR_ADMIN_USER: ${ORCHESTRATOR_ADMIN_USER:-admin}
       ORCHESTRATOR_ADMIN_PASS: ${ORCHESTRATOR_ADMIN_PASS:-}
       CDN_CONFIG_ENABLED: ${CDN_CONFIG_ENABLED:-false}
+      ROUTING_MANIFEST_PATH: ${ROUTING_MANIFEST_PATH:-/app/routing/routing-manifest.json}
       GRPC_CONFIG_ENABLED: ${GRPC_CONFIG_ENABLED:-false}
       GRPC_ADDRESS: ${GRPC_ADDRESS:-}
       GRPC_PORT: ${GRPC_PORT:-443}
@@ -248,6 +249,8 @@ services:
       RECONCILE_INTERVAL: ${RECONCILE_INTERVAL:-10m}
       RECONCILE_BATCH_SIZE: ${RECONCILE_BATCH_SIZE:-200}
       METRICS_COLLECT_INTERVAL: ${METRICS_COLLECT_INTERVAL:-15s}
+    volumes:
+      - ./routing:/app/routing:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8084/readyz || exit 1"]
       interval: 10s

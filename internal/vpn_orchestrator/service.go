@@ -47,6 +47,10 @@ type SubscriptionFeedResult struct {
 	Access      *AccessState
 	Uplink      int64
 	Downlink    int64
+
+	// RoutingB64 — payload для заголовка `routing` (base64). Пустая строка
+	// означает «роутинг не отдаём» (fail-open).
+	RoutingB64 string
 }
 
 func NewService(repo *Repository, producer *commonkafka.Producer, cfg ServiceConfig) *Service {
@@ -65,7 +69,7 @@ func NewService(repo *Repository, producer *commonkafka.Producer, cfg ServiceCon
 	}
 }
 
-func (s *Service) RenderSubscriptionFeedDetailed(ctx context.Context, token string) (*SubscriptionFeedResult, error) {
+func (s *Service) RenderSubscriptionFeedDetailed(ctx context.Context, token string, group clientGroup) (*SubscriptionFeedResult, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return nil, ErrAccessDenied
@@ -120,14 +124,27 @@ func (s *Service) RenderSubscriptionFeedDetailed(ctx context.Context, token stri
 	// (WS + XHTTP-CDN + gRPC) по одной ссылке подписки.
 	lines = append(lines, s.grpcLinesForFeed(ctx, feedItems)...)
 
+	// Сплит-роутинг: манифест компилируется под формат клиента.
+	// Fail-open — при любой проблеме строки пустые и всё работает как раньше.
+	xrayB64, happB64 := globalRoutingCache.load()
+	routingB64 := xrayB64
+	if group == clientGroupHapp {
+		routingB64 = happB64
+	}
+
+	// Для Happ/Incy роутинг дополнительно кладём в тело подписки deeplink'ом
+	// с авто-активацией (.../onadd/) — так профиль применяется без действий
+	// пользователя. Строки добавляются ДО кодирования тела.
+	lines = append(lines, routingBodyLines(group, happB64)...)
+
 	feed := strings.Join(lines, "\n") + "\n"
 	contentType := "text/plain; charset=utf-8"
 
 	switch s.cfg.FeedFormat {
 	case "base64":
-		return &SubscriptionFeedResult{Body: []byte(base64.StdEncoding.EncodeToString([]byte(feed))), ContentType: contentType, Access: access, Uplink: trafficUp, Downlink: trafficDown}, nil
+		return &SubscriptionFeedResult{Body: []byte(base64.StdEncoding.EncodeToString([]byte(feed))), ContentType: contentType, Access: access, Uplink: trafficUp, Downlink: trafficDown, RoutingB64: routingB64}, nil
 	case "plain":
-		return &SubscriptionFeedResult{Body: []byte(feed), ContentType: contentType, Access: access, Uplink: trafficUp, Downlink: trafficDown}, nil
+		return &SubscriptionFeedResult{Body: []byte(feed), ContentType: contentType, Access: access, Uplink: trafficUp, Downlink: trafficDown, RoutingB64: routingB64}, nil
 	default:
 		return nil, fmt.Errorf("unsupported SUBSCRIPTION_FEED_FORMAT: %s", s.cfg.FeedFormat)
 	}

@@ -66,6 +66,8 @@ func (a *App) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 		a.handleServicesMenuChoice(ctx, chatID, state, text)
 	case StepReferralMenu:
 		a.handleReferralMenuChoice(ctx, chatID, state, text)
+	case StepClientChoice:
+		a.handleClientChoice(ctx, chatID, state, text)
 	default:
 		a.handleMainMenuChoice(ctx, chatID, state, text)
 	}
@@ -522,7 +524,44 @@ func (a *App) handleSupport(_ context.Context, chatID int64, _ *ChatState) {
 	a.sendText(chatID, supportText(), mainMenuWithBackKeyboard())
 }
 
+// handleGetConfig показывает меню выбора приложения. Ключ выдаётся уже под
+// конкретный клиент: для Happ/Incy подписка несёт правила маршрутизации с
+// авто-активацией, для v2RayTun/Streisand — в формате их ядра.
 func (a *App) handleGetConfig(ctx context.Context, chatID int64, state *ChatState) {
+	state.Step = StepClientChoice
+	if err := a.stateStore.Set(ctx, chatID, state); err != nil {
+		log.Printf("[tg-bot] failed to save state: %v", err)
+	}
+
+	msg := "📱 *Какое приложение вы используете?*\n\n" +
+		"⭐ *Happ / Incy* — рекомендуем\n" +
+		"Ключ настроится полностью автоматически: российские сайты (банки, госуслуги, маркетплейсы) пойдут напрямую, мимо VPN, и будут открываться как обычно. Ничего включать вручную не нужно.\n\n" +
+		"*v2RayTun / Streisand*\n" +
+		"Тоже поддерживаются — ключ придёт в их формате.\n\n" +
+		"Выберите вариант ниже 👇"
+
+	a.sendMarkdown(chatID, msg, clientChoiceKeyboard())
+}
+
+// handleClientChoice обрабатывает выбор приложения и запрашивает ключ под него.
+func (a *App) handleClientChoice(ctx context.Context, chatID int64, state *ChatState, text string) {
+	var group string
+	switch text {
+	case btnClientHapp:
+		group = "happ"
+	case btnClientXray:
+		group = "xray"
+	case btnBack, btnMainMenu:
+		state.Step = StepMainMenu
+		_ = a.stateStore.Set(ctx, chatID, state)
+		a.sendMainMenu(chatID, true)
+		return
+	default:
+		// Любой другой текст — показать меню выбора ещё раз.
+		a.handleGetConfig(ctx, chatID, state)
+		return
+	}
+
 	state.Step = StepMainMenu
 	if err := a.stateStore.Set(ctx, chatID, state); err != nil {
 		log.Printf("[tg-bot] failed to save state: %v", err)
@@ -530,9 +569,10 @@ func (a *App) handleGetConfig(ctx context.Context, chatID int64, state *ChatStat
 
 	if a.kafkaEnabled() {
 		cmd := &kafkacontracts.GetLinksCommand{
-			Type:       kafkacontracts.SubscriptionCommandGetLinks,
-			CommandID:  uuid.NewString(),
-			TelegramID: chatID,
+			Type:        kafkacontracts.SubscriptionCommandGetLinks,
+			CommandID:   uuid.NewString(),
+			TelegramID:  chatID,
+			ClientGroup: group,
 		}
 
 		if err := a.publishSubscriptionCommand(ctx, chatID, cmd); err != nil {
@@ -541,12 +581,22 @@ func (a *App) handleGetConfig(ctx context.Context, chatID int64, state *ChatStat
 			return
 		}
 
-		a.sendText(chatID, "Готовлю два варианта ключей, подожди немного 👌", mainMenuWithBackKeyboard())
+		a.sendText(chatID, "Готовлю ваш ключ, секунду 👌", mainMenuWithBackKeyboard())
 		return
 	}
 
 	if err := a.sendSubscriptionLinksForUser(ctx, chatID); err != nil {
 		log.Printf("[tg-bot] sendSubscriptionLinksForUser error: %v", err)
+	}
+}
+
+// sendMarkdown отправляет сообщение с Markdown-разметкой и клавиатурой.
+func (a *App) sendMarkdown(chatID int64, text string, keyboard tgbotapi.ReplyKeyboardMarkup) {
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = keyboard
+	if _, err := a.bot.Send(msg); err != nil {
+		log.Printf("[tg-bot] send markdown message failed: %v", err)
 	}
 }
 

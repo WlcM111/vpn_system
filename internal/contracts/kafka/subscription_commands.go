@@ -27,6 +27,10 @@ type GetLinksCommand struct {
 	Type       SubscriptionCommandType `json:"type"`
 	CommandID  string                  `json:"command_id"`
 	TelegramID int64                   `json:"telegram_id"`
+	// ClientGroup — какой клиент выбрал пользователь в боте: "happ" (Happ/Incy)
+	// или "xray" (v2RayTun/Streisand). Влияет на текст инструкции и на подсказку
+	// формата роутинга в ссылке (?c=). Пустое значение = "happ" (рекомендуемый).
+	ClientGroup string `json:"client_group,omitempty"`
 }
 
 type CancelSubscriptionCommand struct {

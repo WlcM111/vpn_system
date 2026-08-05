@@ -46,6 +46,11 @@ const (
 
 	btnGetConfig = "🔗 Получить ссылку доступа"
 
+	// Выбор клиента при выдаче ключа. Happ/Incy первыми — они дают
+	// авто-настройку маршрутизации (российские сайты идут мимо VPN).
+	btnClientHapp = "⭐ Happ / Incy — рекомендуем"
+	btnClientXray = "v2RayTun / Streisand"
+
 	// Реферальная программа.
 	btnReferral       = "🎁 Реферальная программа"
 	btnReferralCopy   = "🔗 Скопировать мою ссылку"
@@ -174,6 +179,24 @@ func trialOrBuyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 			tgbotapi.NewKeyboardButton(btnBuySubscription),
 		),
 		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(btnMainMenu),
+		),
+	)
+}
+
+// clientChoiceKeyboard — меню выбора приложения при выдаче ключа.
+// Happ/Incy стоит первым и помечен как рекомендуемый: только эта группа
+// получает авто-активацию правил маршрутизации из подписки.
+func clientChoiceKeyboard() tgbotapi.ReplyKeyboardMarkup {
+	return tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(btnClientHapp),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(btnClientXray),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(btnBack),
 			tgbotapi.NewKeyboardButton(btnMainMenu),
 		),
 	)

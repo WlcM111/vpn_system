@@ -65,7 +65,8 @@ func (h *HTTPHandlers) handleSubscriptionFeed(w http.ResponseWriter, r *http.Req
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	res, err := h.service.RenderSubscriptionFeedDetailed(ctx, token)
+	group := detectClientGroup(r)
+	res, err := h.service.RenderSubscriptionFeedDetailed(ctx, token, group)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrAccessDenied):
@@ -86,6 +87,12 @@ func (h *HTTPHandlers) handleSubscriptionFeed(w http.ResponseWriter, r *http.Req
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Profile-Title", "House VPN")
 	w.Header().Set("Profile-Update-Interval", "24")
+	// Сплит-роутинг: правила приезжают клиенту вместе с подпиской и
+	// применяются автоматически. Пустое значение — роутинг не настроен,
+	// подписка отдаётся как обычно (fail-open).
+	if res.RoutingB64 != "" {
+		w.Header().Set("routing", res.RoutingB64)
+	}
 	if res.Access != nil {
 		until := res.Access.AccessUntil
 		if res.Access.Status == "grace" {

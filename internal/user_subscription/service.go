@@ -268,7 +268,7 @@ func (s *Service) HandleGetLinks(ctx context.Context, cmd *kafkacontracts.GetLin
 	if err != nil {
 		return err
 	}
-	if err := s.sendLinksNotificationTx(ctx, tx, state); err != nil {
+	if err := s.sendLinksNotificationForClientTx(ctx, tx, state, cmd.ClientGroup); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -643,6 +643,13 @@ func (s *Service) sendStatusNotificationTx(ctx context.Context, tx pgx.Tx, state
 }
 
 func (s *Service) sendLinksNotificationTx(ctx context.Context, tx pgx.Tx, state *SubscriptionState) error {
+	return s.sendLinksNotificationForClientTx(ctx, tx, state, "")
+}
+
+// sendLinksNotificationForClientTx отправляет ссылку доступа с инструкцией под
+// выбранное пользователем приложение. group: "happ" (Happ/Incy) или "xray"
+// (v2RayTun/Streisand); пустое значение трактуется как рекомендуемый Happ.
+func (s *Service) sendLinksNotificationForClientTx(ctx context.Context, tx pgx.Tx, state *SubscriptionState, group string) error {
 	if state == nil {
 		return nil
 	}
@@ -681,17 +688,39 @@ func (s *Service) sendLinksNotificationTx(ctx context.Context, tx pgx.Tx, state 
 		expireStr = link.ExpiresAt.Format("02.01.2006")
 	}
 
+	// Подсказка формата роутинга в самой ссылке: оркестратор отдаст правила
+	// маршрутизации ровно в том формате, который понимает выбранное приложение.
+	url := link.URL
+	isHapp := group != "xray"
+	if isHapp {
+		url += "?c=happ"
+	} else {
+		url += "?c=xray"
+	}
+
 	var sb strings.Builder
-	sb.WriteString("🎉 Вот твоя *универсальная ссылка доступа* для v2RayTun:\n\n")
-	sb.WriteString("*" + link.Title + "*\n")
-	sb.WriteString("`" + link.URL + "`\n")
-	sb.WriteString("Срок действия доступа: *" + expireStr + "*\n\n")
-	sb.WriteString("Эта ссылка загружает доступные технические профили подключения, предусмотренные твоей подпиской.\n\n")
-	sb.WriteString("1️⃣ Скопируй ссылку целиком.\n")
-	sb.WriteString("2️⃣ Открой *v2RayTun* → вкладка *Connect*.\n")
-	sb.WriteString("3️⃣ Нажми ➕ → *Enter link* или *Import from clipboard*.\n")
-	sb.WriteString("4️⃣ Вставь ссылку и подтверди.\n\n")
-	sb.WriteString("⚠️ Не делись этой ссылкой: она привязана к твоей подписке.")
+	if isHapp {
+		sb.WriteString("🎉 Ваш ключ доступа для *Happ / Incy*:\n\n")
+	} else {
+		sb.WriteString("🎉 Ваш ключ доступа для *v2RayTun / Streisand*:\n\n")
+	}
+	sb.WriteString("`" + url + "`\n")
+	sb.WriteString("Срок действия: *" + expireStr + "*\n\n")
+
+	if isHapp {
+		sb.WriteString("✨ Ключ настроен автоматически: российские сайты — банки, госуслуги, маркетплейсы — пойдут напрямую, мимо VPN, и будут открываться как обычно. Включать ничего не нужно.\n\n")
+		sb.WriteString("1️⃣ Нажмите на ссылку выше — она скопируется.\n")
+		sb.WriteString("2️⃣ Откройте *Happ* или *Incy*.\n")
+		sb.WriteString("3️⃣ Нажмите ➕ → *Добавить из буфера обмена*.\n")
+		sb.WriteString("4️⃣ Выберите сервер и подключайтесь 🚀\n\n")
+	} else {
+		sb.WriteString("1️⃣ Нажмите на ссылку выше — она скопируется.\n")
+		sb.WriteString("2️⃣ Откройте *v2RayTun* → вкладка *Connect* (или *Streisand*).\n")
+		sb.WriteString("3️⃣ Нажмите ➕ → *Enter link* / *Import from clipboard*.\n")
+		sb.WriteString("4️⃣ Вставьте ссылку и подтвердите.\n\n")
+		sb.WriteString("💡 Для полностью автоматической настройки (российские сайты мимо VPN) рекомендуем *Happ* или *Incy* — там всё применяется само.\n\n")
+	}
+	sb.WriteString("⚠️ Не делитесь ссылкой: она привязана к вашей подписке.")
 
 	return s.notifyTx(ctx, tx, kafkacontracts.TgNotification{
 		TelegramID: state.TelegramID,
