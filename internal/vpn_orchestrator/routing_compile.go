@@ -142,7 +142,10 @@ func compileXrayRoutingB64(m *RoutingManifest) string {
 	}
 
 	payload := xrayRouting{
-		DomainStrategy: "IPIfNonMatch",
+		// AsIs — без предварительного резолва. Наш список direct содержит только
+		// .ru/.рф, поэтому при IPIfNonMatch Xray резолвил КАЖДЫЙ иностранный домен
+		// через российский DNS, и заблокированные сайты не открывались.
+		DomainStrategy: "AsIs",
 		DomainMatcher:  "hybrid",
 		ID:             stableRoutingID(name),
 		Name:           name,
@@ -273,7 +276,7 @@ func compileHappRoutingB64(m *RoutingManifest) string {
 		ProxyIp:        happValues(m.ProxyIPs),
 		BlockSites:     happValues(m.BlockDomains),
 		BlockIp:        []string{},
-		DomainStrategy: "IPIfNonMatch",
+		DomainStrategy: "AsIs",
 		FakeDNS:        "false",
 	}
 
