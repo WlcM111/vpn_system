@@ -16,6 +16,8 @@ func (h *HTTPHandlers) RegisterAdmin(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/cdn-endpoints/", h.withAdminAuth(h.handleAdminCDNEndpointByKey))
 	mux.HandleFunc("/admin/grpc-endpoints", h.withAdminAuth(h.handleAdminGRPCEndpoints))
 	mux.HandleFunc("/admin/grpc-endpoints/", h.withAdminAuth(h.handleAdminGRPCEndpointByKey))
+	mux.HandleFunc("/admin/hysteria-endpoints", h.withAdminAuth(h.handleAdminHysteriaEndpoints))
+	mux.HandleFunc("/admin/hysteria-endpoints/", h.withAdminAuth(h.handleAdminHysteriaEndpointByKey))
 	mux.HandleFunc("/admin/users/", h.withAdminAuth(h.handleAdminUserActions))
 }
 
@@ -198,6 +200,50 @@ func (h *HTTPHandlers) handleAdminGRPCEndpointByKey(w http.ResponseWriter, r *ht
 		return
 	}
 	if err := h.service.repo.DeleteGRPCEndpoint(r.Context(), grpcKey); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAdminHysteriaEndpoints — создание/обновление Hysteria-эндпоинта (POST).
+func (h *HTTPHandlers) handleAdminHysteriaEndpoints(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req AdminHysteriaEndpointRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.HysteriaKey) == "" || strings.TrimSpace(req.Address) == "" {
+		http.Error(w, "hysteria_key and address are required", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.ServerKey) == "" {
+		http.Error(w, "server_key is required: hysteria link must point to the user's own node", http.StatusBadRequest)
+		return
+	}
+	if err := h.service.repo.UpsertAdminHysteriaEndpoint(r.Context(), req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAdminHysteriaEndpointByKey — удаление Hysteria-эндпоинта (DELETE).
+func (h *HTTPHandlers) handleAdminHysteriaEndpointByKey(w http.ResponseWriter, r *http.Request) {
+	hysteriaKey := strings.Trim(strings.TrimPrefix(r.URL.Path, "/admin/hysteria-endpoints/"), "/")
+	if hysteriaKey == "" {
+		http.Error(w, "hysteria_key required", http.StatusBadRequest)
+		return
+	}
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := h.service.repo.DeleteHysteriaEndpoint(r.Context(), hysteriaKey); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

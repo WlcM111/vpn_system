@@ -128,15 +128,16 @@ func selectCDNForServer(endpoints []CDNEndpoint, serverKey string) (CDNEndpoint,
 		}
 	}
 
-	// 2) глобальный CDN (без привязки)
+	// 2) глобальный CDN (без привязки) — только если он единственный вариант
 	for _, e := range endpoints {
 		if e.ServerKey == "" {
 			return e, true
 		}
 	}
 
-	// 3) любой первый
-	return endpoints[0], true
+	// 3) У этого сервера нет CDN-эндпоинта — см. комментарий в grpc_config.go:
+	// чужой эндпоинт означает ссылку на ноду, где пользователя нет.
+	return CDNEndpoint{}, false
 }
 
 // BuildCDNVLESSURLFromEndpoint строит CDN vless://-ссылку из эндпоинта и UUID.

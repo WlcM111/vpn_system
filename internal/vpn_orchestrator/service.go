@@ -120,9 +120,13 @@ func (s *Service) RenderSubscriptionFeedDetailed(ctx context.Context, token stri
 	lines = append(lines, s.cdnLinesForFeed(ctx, feedItems)...)
 
 	// gRPC-конфигурации — аналогично CDN: для каждого сервера подбирается gRPC-
-	// эндпоинт и добавляется в тот же фид. Так пользователь получает три транспорта
-	// (WS + XHTTP-CDN + gRPC) по одной ссылке подписки.
+	// эндпоинт и добавляется в тот же фид.
 	lines = append(lines, s.grpcLinesForFeed(ctx, feedItems)...)
+
+	// Hysteria2 — UDP/QUIC-транспорт. Паролем выступает UUID пользователя,
+	// который проверяет node-agent при подключении. Так пользователь получает
+	// четыре транспорта (WS + XHTTP-CDN + gRPC + Hysteria) по одной подписке.
+	lines = append(lines, s.hysteriaLinesForFeed(ctx, feedItems)...)
 
 	// Сплит-роутинг: манифест компилируется под формат клиента.
 	// Fail-open — при любой проблеме строки пустые и всё работает как раньше.

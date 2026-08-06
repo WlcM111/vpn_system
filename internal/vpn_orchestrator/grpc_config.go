@@ -102,15 +102,17 @@ func selectGRPCForServer(endpoints []GRPCEndpoint, serverKey string) (GRPCEndpoi
 		}
 	}
 
-	// 2) глобальный (без привязки)
+	// 2) глобальный (без привязки) — только если он единственный вариант
 	for _, e := range endpoints {
 		if e.ServerKey == "" {
 			return e, true
 		}
 	}
 
-	// 3) любой первый
-	return endpoints[0], true
+	// 3) У этого сервера нет gRPC-эндпоинта. Отдавать чужой НЕЛЬЗЯ: ссылка
+	// укажет на другую ноду, где UUID пользователя не зарегистрирован, —
+	// в списке она появится, а подключение молча не заработает.
+	return GRPCEndpoint{}, false
 }
 
 // BuildGRPCVLESSURLFromEndpoint строит gRPC vless://-ссылку из эндпоинта и UUID.
