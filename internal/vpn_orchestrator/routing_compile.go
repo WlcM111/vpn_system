@@ -6,7 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // ============================================================================
@@ -27,6 +30,28 @@ const (
 	clientGroupHapp clientGroup = "happ"
 	clientGroupXray clientGroup = "xray"
 )
+
+// Стандартные гео-базы (те же, что в профиле по умолчанию Happ).
+// Нужны, потому что активация профиля гейтится успешной загрузкой гео-файлов.
+const (
+	happGeoIPURL   = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
+	happGeoSiteURL = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
+)
+
+// manifestVersionStamp возвращает метку времени версии манифеста для поля
+// LastUpdated. Берётся из времени изменения файла-манифеста: правка манифеста
+// меняет метку, клиент видит новую версию и переприменяет профиль.
+func manifestVersionStamp() int64 {
+	path := routingManifestPath()
+	if path == "" {
+		return time.Now().Unix()
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		return time.Now().Unix()
+	}
+	return st.ModTime().Unix()
+}
 
 // detectClientGroup определяет формат роутинга для запроса.
 // Приоритет: явный параметр ?c= (его проставляет бот по выбору пользователя),
@@ -140,6 +165,10 @@ type happRouting struct {
 	Name        string `json:"Name"`
 	GlobalProxy string `json:"GlobalProxy"`
 
+	// UseChunkFiles — Happ вырезает из геофайлов только нужные секции.
+	// Обязательно для iOS: там лимит памяти ядра 50 МБ, без нарезки Xray падает.
+	UseChunkFiles string `json:"UseChunkFiles"`
+
 	RemoteDNSType     string `json:"RemoteDNSType,omitempty"`
 	RemoteDNSDomain   string `json:"RemoteDNSDomain,omitempty"`
 	RemoteDNSIP       string `json:"RemoteDNSIP,omitempty"`
@@ -147,8 +176,16 @@ type happRouting struct {
 	DomesticDNSDomain string `json:"DomesticDNSDomain,omitempty"`
 	DomesticDNSIP     string `json:"DomesticDNSIP,omitempty"`
 
-	Geoipurl   string `json:"Geoipurl,omitempty"`
-	Geositeurl string `json:"Geositeurl,omitempty"`
+	Geoipurl   string `json:"Geoipurl"`
+	Geositeurl string `json:"Geositeurl"`
+
+	// LastUpdated — метка времени. По документации Happ именно она запускает
+	// принудительную загрузку геофайлов, а активация профиля гейтится успешной
+	// загрузкой. Без этого поля тумблер маршрутизации не включается сам.
+	LastUpdated string `json:"LastUpdated"`
+
+	// RouteOrder — порядок проверки правил. Без него порядок не определён.
+	RouteOrder string `json:"RouteOrder"`
 
 	DirectSites []string `json:"DirectSites"`
 	DirectIp    []string `json:"DirectIp"`
@@ -158,6 +195,7 @@ type happRouting struct {
 	BlockIp     []string `json:"BlockIp"`
 
 	DomainStrategy string `json:"DomainStrategy"`
+	FakeDNS        string `json:"FakeDNS"`
 }
 
 // happValue нормализует значение для Happ-профиля.
@@ -218,8 +256,17 @@ func compileHappRoutingB64(m *RoutingManifest) string {
 	}
 
 	payload := happRouting{
-		Name:           name,
-		GlobalProxy:    "true",
+		Name:          name,
+		GlobalProxy:   "true",
+		UseChunkFiles: "true",
+		// Гео-файлы обязательны: активация профиля в Happ гейтится их успешной
+		// загрузкой. Ссылки — стандартные loyalsoldier, как в профиле по умолчанию.
+		Geoipurl:   happGeoIPURL,
+		Geositeurl: happGeoSiteURL,
+		// Метка времени = версия манифеста. Меняется при каждой правке файла,
+		// поэтому клиент перекачает гео-файлы и переприменит профиль.
+		LastUpdated:    strconv.FormatInt(manifestVersionStamp(), 10),
+		RouteOrder:     "block-proxy-direct",
 		DirectSites:    directSites,
 		DirectIp:       directIPs,
 		ProxySites:     happValues(m.ProxyDomains),
@@ -227,24 +274,24 @@ func compileHappRoutingB64(m *RoutingManifest) string {
 		BlockSites:     happValues(m.BlockDomains),
 		BlockIp:        []string{},
 		DomainStrategy: "IPIfNonMatch",
+		FakeDNS:        "false",
 	}
 
-	if m.DNS.RemoteIP != "" || m.DNS.RemoteDoH != "" {
+	if m.DNS.RemoteIP != "" {
 		payload.RemoteDNSIP = m.DNS.RemoteIP
-		if m.DNS.RemoteDoH != "" {
-			payload.RemoteDNSType = "DoH"
-			payload.RemoteDNSDomain = m.DNS.RemoteDoH
-		}
+		payload.RemoteDNSType = "DoH"
+		payload.RemoteDNSDomain = m.DNS.RemoteDoH
 	}
-	if m.DNS.DomesticIP != "" || m.DNS.DomesticDoH != "" {
+	if m.DNS.DomesticIP != "" {
 		payload.DomesticDNSIP = m.DNS.DomesticIP
-		if m.DNS.DomesticDoH != "" {
-			payload.DomesticDNSType = "DoH"
-			payload.DomesticDNSDomain = m.DNS.DomesticDoH
-		}
+		payload.DomesticDNSType = "DoH"
+		payload.DomesticDNSDomain = m.DNS.DomesticDoH
 	}
-	if m.GeoRules.Enabled {
+	// Если в манифесте заданы свои гео-ссылки — используем их.
+	if m.GeoRules.Enabled && m.GeoRules.GeoIPURL != "" {
 		payload.Geoipurl = m.GeoRules.GeoIPURL
+	}
+	if m.GeoRules.Enabled && m.GeoRules.GeoSiteURL != "" {
 		payload.Geositeurl = m.GeoRules.GeoSiteURL
 	}
 
