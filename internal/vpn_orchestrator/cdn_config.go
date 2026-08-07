@@ -223,7 +223,7 @@ func BuildCDNVLESSURLFromEndpoint(e CDNEndpoint, userUUID string) string {
 		"extra=" + url.QueryEscape(extraJSON),
 	}
 
-	remark := url.QueryEscape(remarks)
+	remark := escapeFragment(remarks)
 	return "vless://" + userUUID + "@" + e.Address + ":" + strconv.Itoa(port) +
 		"?" + strings.Join(params, "&") + "#" + remark
 }

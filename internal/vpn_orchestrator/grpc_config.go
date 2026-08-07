@@ -171,7 +171,7 @@ func BuildGRPCVLESSURLFromEndpoint(e GRPCEndpoint, userUUID string) string {
 		params = append(params, "host="+url.QueryEscape(e.Host))
 	}
 
-	remark := url.QueryEscape(remarks)
+	remark := escapeFragment(remarks)
 	return "vless://" + userUUID + "@" + e.Address + ":" + strconv.Itoa(port) +
 		"?" + strings.Join(params, "&") + "#" + remark
 }

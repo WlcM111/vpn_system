@@ -122,5 +122,5 @@ func BuildHysteriaURL(e HysteriaEndpoint, userUUID string) string {
 	}
 
 	return "hysteria2://" + url.QueryEscape(userUUID) + "@" + e.Address + ":" + strconv.Itoa(port) +
-		"?" + strings.Join(params, "&") + "#" + url.QueryEscape(remarks)
+		"?" + strings.Join(params, "&") + "#" + escapeFragment(remarks)
 }

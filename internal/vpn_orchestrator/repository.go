@@ -781,7 +781,7 @@ func BuildVLESSURL(item PoolItem, cred UserCredential) string {
 		params = append(params, "flow="+url.QueryEscape(item.Flow))
 	}
 
-	remark := url.QueryEscape(item.Title)
+	remark := escapeFragment(item.Title)
 	return fmt.Sprintf("vless://%s@%s:%d?%s#%s", cred.VLESSUUID, host, port, strings.Join(params, "&"), remark)
 }
 
