@@ -192,7 +192,7 @@
     {
       "id": 7,
       "type": "stat",
-      "title": "Триалы (активные / истёкшие)",
+      "title": "Триалы (активные / ушли)",
       "gridPos": { "h": 4, "w": 6, "x": 0, "y": 4 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
@@ -200,11 +200,6 @@
           "refId": "A",
           "expr": "sum(vpn_platform_subscriptions_lifecycle_total{kind=\"trial\",lifecycle=\"active\",service=\"vpn-orchestrator\"})",
           "legendFormat": "активные"
-        },
-        {
-          "refId": "B",
-          "expr": "sum(vpn_platform_subscriptions_lifecycle_total{kind=\"trial\",lifecycle=\"expired\",service=\"vpn-orchestrator\"})",
-          "legendFormat": "истёкшие"
         },
         {
           "refId": "C",
@@ -229,8 +224,8 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "истёкшие" },
-            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }]
+            "matcher": { "id": "byName", "options": "ушли" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
           }
         ]
       }
@@ -238,7 +233,7 @@
     {
       "id": 8,
       "type": "stat",
-      "title": "Подписки (активные / истёкшие)",
+      "title": "Подписки (активные / ушли)",
       "gridPos": { "h": 4, "w": 6, "x": 6, "y": 4 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
@@ -246,11 +241,6 @@
           "refId": "A",
           "expr": "sum(vpn_platform_subscriptions_lifecycle_total{kind=\"paid\",lifecycle=\"active\",service=\"vpn-orchestrator\"})",
           "legendFormat": "активные"
-        },
-        {
-          "refId": "B",
-          "expr": "sum(vpn_platform_subscriptions_lifecycle_total{kind=\"paid\",lifecycle=\"expired\",service=\"vpn-orchestrator\"})",
-          "legendFormat": "истёкшие"
         },
         {
           "refId": "C",
@@ -275,7 +265,7 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "истёкшие" },
+            "matcher": { "id": "byName", "options": "ушли" },
             "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
           }
         ]
