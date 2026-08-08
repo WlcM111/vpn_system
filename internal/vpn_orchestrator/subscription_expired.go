@@ -80,6 +80,18 @@ func writeExpiredSubscription(w http.ResponseWriter, feedFormat string) {
 	// Тело подписки: те же параметры строками с '#'. Документация Happ
 	// допускает оба способа доставки, а часть клиентов надёжнее читает тело.
 	// Ссылок на серверы нет — список у пользователя очистится.
+	// Клиенты, получившие подписку БЕЗ единого валидного конфига, считают её
+	// невалидной и прекращают разбор — до заголовка announce дело не доходит
+	// (в Streisand это прямо видно по ошибке "Subscription does not contain
+	// valid configuration"). Поэтому кладём записи-заглушки: подключиться по
+	// ним нельзя (адрес 127.0.0.1), но их НАЗВАНИЯ показывают все клиенты без
+	// исключения — так сообщение видит и Happ, и Incy, и v2RayTun, и Streisand,
+	// и Hiddify.
+	placeholder := func(name string) string {
+		return "vless://00000000-0000-0000-0000-000000000000@127.0.0.1:1" +
+			"?type=tcp&security=none&encryption=none#" + escapeFragment(name)
+	}
+
 	body := strings.Join([]string{
 		"#profile-title: " + expiredProfileTitle,
 		"#announce: " + announce,
@@ -88,6 +100,8 @@ func writeExpiredSubscription(w http.ResponseWriter, feedFormat string) {
 		fmt.Sprintf("#subscription-userinfo: upload=0; download=0; total=0; expire=%d", expired),
 		"#sub-expire: 1",
 		"#sub-expire-button-link: " + renew,
+		placeholder("⛔ Ваша Подписка закончилась. Рады, что вы были с нами. Всегда можно продлить. самые низкие цены!"),
+		placeholder("👉 Продлить: t.me/vpn_house_bot"),
 		"",
 	}, "\n")
 
