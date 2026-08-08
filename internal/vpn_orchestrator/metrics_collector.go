@@ -203,8 +203,14 @@ func (c *MetricsCollector) collectSubscriptionLifecycle(ctx context.Context) err
 	var (
 		trialActive, trialExpired float64
 		paidActive, paidExpired   float64
+		trialChurned, paidChurned float64
 	)
 
+	// churned — те, кого уже перевели в статус expired (sweep-воркер или
+	// биллинг). Раньше этот статус не считался нигде, поэтому после отзыва
+	// доступа люди просто исчезали из метрик и отток был не виден.
+	// Платного от триального отличаем по факту успешной оплаты: код тарифа
+	// после истечения может быть перезаписан, а платёж — нет.
 	err := c.pool.QueryRow(ctx, `
 		SELECT
 			COUNT(*) FILTER (
@@ -218,9 +224,21 @@ func (c *MetricsCollector) collectSubscriptionLifecycle(ctx context.Context) err
 			) AS paid_active,
 			COUNT(*) FILTER (
 				WHERE status IN ('active', 'grace') AND (expires_at IS NULL OR expires_at <= now())
-			) AS paid_expired
-		FROM user_subscriptions
-	`).Scan(&trialActive, &trialExpired, &paidActive, &paidExpired)
+			) AS paid_expired,
+			COUNT(*) FILTER (
+				WHERE status = 'expired' AND NOT EXISTS (
+					SELECT 1 FROM payments p
+					WHERE p.telegram_id = us.telegram_id AND p.status = 'succeeded'
+				)
+			) AS trial_churned,
+			COUNT(*) FILTER (
+				WHERE status = 'expired' AND EXISTS (
+					SELECT 1 FROM payments p
+					WHERE p.telegram_id = us.telegram_id AND p.status = 'succeeded'
+				)
+			) AS paid_churned
+		FROM user_subscriptions us
+	`).Scan(&trialActive, &trialExpired, &paidActive, &paidExpired, &trialChurned, &paidChurned)
 	if err != nil {
 		return err
 	}
@@ -232,6 +250,10 @@ func (c *MetricsCollector) collectSubscriptionLifecycle(ctx context.Context) err
 	commonmetrics.SubscriptionsByLifecycle.WithLabelValues("paid", "active").Set(paidActive)
 	commonmetrics.SubscriptionsByLifecycle.WithLabelValues("paid", "expired").Set(paidExpired)
 	commonmetrics.SubscriptionsByLifecycle.WithLabelValues("paid", "total").Set(paidActive + paidExpired)
+
+	// churned — доступ уже отозван. Именно это и есть реальный отток.
+	commonmetrics.SubscriptionsByLifecycle.WithLabelValues("trial", "churned").Set(trialChurned)
+	commonmetrics.SubscriptionsByLifecycle.WithLabelValues("paid", "churned").Set(paidChurned)
 
 	return nil
 }

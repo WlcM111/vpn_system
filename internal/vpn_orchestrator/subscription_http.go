@@ -70,7 +70,11 @@ func (h *HTTPHandlers) handleSubscriptionFeed(w http.ResponseWriter, r *http.Req
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrAccessDenied):
-			http.Error(w, "subscription is not active", http.StatusForbidden)
+			// Подписка истекла или отозвана: отдаём пустой список серверов и
+			// вежливое объяснение со ссылкой на бота вместо сухой ошибки 403.
+			// Статус 200 обязателен — иначе клиент сочтёт обновление неудачным
+			// и оставит у пользователя старые нерабочие конфиги.
+			writeExpiredSubscription(w, h.service.cfg.FeedFormat)
 		case errors.Is(err, ErrNoPoolItems):
 			http.Error(w, "no vpn pool items configured", http.StatusServiceUnavailable)
 		default:

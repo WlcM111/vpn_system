@@ -205,6 +205,11 @@
           "refId": "B",
           "expr": "sum(vpn_platform_subscriptions_lifecycle_total{kind=\"trial\",lifecycle=\"expired\",service=\"vpn-orchestrator\"})",
           "legendFormat": "истёкшие"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(vpn_platform_subscriptions_lifecycle_total{kind=\"trial\",lifecycle=\"churned\",service=\"vpn-orchestrator\"})",
+          "legendFormat": "ушли"
         }
       ],
       "options": {
@@ -246,6 +251,11 @@
           "refId": "B",
           "expr": "sum(vpn_platform_subscriptions_lifecycle_total{kind=\"paid\",lifecycle=\"expired\",service=\"vpn-orchestrator\"})",
           "legendFormat": "истёкшие"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(vpn_platform_subscriptions_lifecycle_total{kind=\"paid\",lifecycle=\"churned\",service=\"vpn-orchestrator\"})",
+          "legendFormat": "ушли"
         }
       ],
       "options": {
