@@ -133,6 +133,34 @@ func (c *MetricsCollector) collectHeavy(ctx context.Context) {
 	if err := c.collectCryptoRevenue(cctx); err != nil {
 		slog.Warn("[metrics] collect crypto revenue failed", "err", err)
 	}
+	if err := c.collectRenewedThisMonth(cctx); err != nil {
+		slog.Warn("[metrics] collect renewed this month failed", "err", err)
+	}
+}
+
+// collectRenewedThisMonth — сколько уникальных людей оплатили подписку в
+// текущем календарном месяце. Считаем и карточные платежи, и крипто-инвойсы;
+// один человек, оплативший обоими способами, учитывается один раз.
+func (c *MetricsCollector) collectRenewedThisMonth(ctx context.Context) error {
+	var renewed float64
+	err := c.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM (
+			SELECT telegram_id
+			FROM payments
+			WHERE status = 'succeeded'
+			  AND created_at >= date_trunc('month', now())
+			UNION
+			SELECT telegram_id
+			FROM crypto_invoices
+			WHERE status = 'paid'
+			  AND COALESCE(paid_at, created_at) >= date_trunc('month', now())
+		) AS renewed_users
+	`).Scan(&renewed)
+	if err != nil {
+		return err
+	}
+	commonmetrics.SubscriptionsRenewedThisMonth.Set(renewed)
+	return nil
 }
 
 // collectSubscriptions — пользователи по статусу подписки (тяжёлый COUNT).

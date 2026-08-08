@@ -113,7 +113,7 @@
       },
       "targets": [
         {
-          "expr": "sum(vpn_platform_subscriptions_total{status=~\"active|grace\",service=\"vpn-orchestrator\"})",
+          "expr": "sum(vpn_platform_subscriptions_lifecycle_total{kind=\"paid\",lifecycle=\"active\",service=\"vpn-orchestrator\"})",
           "refId": "A",
           "instant": true
         }
@@ -269,6 +269,34 @@
             "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
           }
         ]
+      }
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Продлили в этом месяце",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(vpn_platform_subscriptions_renewed_month{service=\"vpn-orchestrator\"})",
+          "legendFormat": "оплатили"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] },
+          "color": { "mode": "fixed", "fixedColor": "blue" }
+        },
+        "overrides": []
       }
     },
     {

@@ -131,6 +131,13 @@ func main() {
 			}
 		}
 		go user_subscription.RunExpirationReminderWorker(ctx, svc, reminderInterval)
+
+		// Воркер принудительного истечения: отзывает доступ у тех, чья подписка
+		// закончилась, и публикует SubscriptionSuspendedEvent, по которому
+		// оркестратор снимает учётки с нод. Раньше это делал только биллинг и
+		// только для рекуррентных профилей в grace — остальные оставались с
+		// доступом бессрочно.
+		go user_subscription.RunExpirySweepWorker(ctx, svc)
 	}
 
 	<-stop

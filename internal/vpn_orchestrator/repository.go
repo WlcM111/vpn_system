@@ -581,7 +581,10 @@ func (r *Repository) ListActiveAccessesForReconcile(ctx context.Context, afterTe
 	rows, err := r.pool.Query(ctx, `
 		SELECT telegram_id, status, expires_at, grace_until, access_rev, country_code
 		FROM user_subscriptions
-		WHERE status IN ('trial', 'active', 'grace')
+		WHERE (
+		        (status IN ('trial', 'active') AND (expires_at IS NULL OR expires_at > now()))
+		     OR (status = 'grace' AND (grace_until IS NULL OR grace_until > now()))
+		      )
 		  AND telegram_id > $1
 		ORDER BY telegram_id
 		LIMIT $2

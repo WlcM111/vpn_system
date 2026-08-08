@@ -462,6 +462,66 @@ func (r *Repository) MarkGraceStartedTx(ctx context.Context, tx pgx.Tx, telegram
 	return r.getStateForUpdateTx(ctx, tx, telegramID)
 }
 
+// ExpiredCandidate — кандидат на принудительное истечение (sweep-воркер).
+type ExpiredCandidate struct {
+	TelegramID int64
+	Status     string
+}
+
+// FindExpiredForSweep ищет подписки с истёкшим сроком, которые ещё не переведены
+// в expired.
+//
+// Отсрочки разные, чтобы не сломать автопродление:
+//   - plainMargin — для тех, у кого автопродление выключено: биллинг их
+//     продлевать не будет, отзываем почти сразу;
+//   - renewMargin — для тех, у кого автопродление включено: биллинг владеет
+//     ими (ретраи + grace), поэтому здесь только страховочная сетка на случай,
+//     если биллинг сломался;
+//   - для grace смотрим на grace_until, а не на expires_at.
+//
+// SKIP LOCKED — чтобы параллельные проходы не конкурировали за одни строки.
+func (r *Repository) FindExpiredForSweep(ctx context.Context, plainMargin, renewMargin time.Duration, limit int) ([]ExpiredCandidate, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	rows, err := r.pool.Query(queryCtx, `
+		SELECT telegram_id, status
+		FROM user_subscriptions
+		WHERE (
+		        status IN ('trial', 'active')
+		        AND expires_at IS NOT NULL
+		        AND expires_at <= now() - (
+		              CASE WHEN auto_renew_enabled THEN $2::interval ELSE $1::interval END
+		            )
+		      )
+		   OR (
+		        status = 'grace'
+		        AND grace_until IS NOT NULL
+		        AND grace_until <= now() - $1::interval
+		      )
+		ORDER BY expires_at NULLS LAST
+		LIMIT $3
+		FOR UPDATE SKIP LOCKED
+	`, plainMargin.String(), renewMargin.String(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("find expired for sweep: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ExpiredCandidate
+	for rows.Next() {
+		var c ExpiredCandidate
+		if err := rows.Scan(&c.TelegramID, &c.Status); err != nil {
+			return nil, fmt.Errorf("scan expired candidate: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 func (r *Repository) MarkSuspendedTx(ctx context.Context, tx pgx.Tx, telegramID int64, country, reason string) (*SubscriptionState, error) {
 	if err := r.ensureUserAndStateTx(ctx, tx, telegramID, country); err != nil {
 		return nil, err

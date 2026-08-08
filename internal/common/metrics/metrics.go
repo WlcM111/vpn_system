@@ -72,6 +72,14 @@ var (
 		Help: "User subscriptions by kind (trial/paid) and lifecycle (active/expired/total), based on expires_at vs now().",
 	}, []string{"kind", "lifecycle"})
 
+	// Уникальные пользователи с успешной оплатой в ТЕКУЩЕМ календарном месяце
+	// (карта + крипта). Обнуляется сама при смене месяца, потому что запрос
+	// привязан к date_trunc('month', now()).
+	SubscriptionsRenewedThisMonth = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "vpn_platform_subscriptions_renewed_month",
+		Help: "Distinct users with a successful payment in the current calendar month.",
+	})
+
 	// Кол-во активных пользователей на ноде (active_users из vpn_servers).
 	NodeActiveUsers = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "vpn_platform_node_active_users",
@@ -201,6 +209,7 @@ func init() {
 		// бизнес-метрики
 		SubscriptionsByStatus,
 		SubscriptionsByLifecycle,
+		SubscriptionsRenewedThisMonth,
 		NodeActiveUsers, NodeMaxUsers, NodeLoadPercent, NodeUp, NodeHeartbeatAgeSeconds,
 		NodesCount, PoolCapacityTotal, PoolActiveTotal, PoolItemsCount,
 		CryptoInvoicesByStatus, CryptoRevenueTotal, CryptoPaidCount,
