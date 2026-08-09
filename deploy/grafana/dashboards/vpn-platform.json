@@ -300,6 +300,44 @@
       }
     },
     {
+      "id": 10,
+      "type": "stat",
+      "title": "Сегменты пользователей",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum(vpn_platform_subscriptions_segment{segment=\"paid_active\",service=\"vpn-orchestrator\"})", "legendFormat": "платят сейчас" },
+        { "refId": "B", "expr": "sum(vpn_platform_subscriptions_segment{segment=\"trial_new\",service=\"vpn-orchestrator\"})", "legendFormat": "первый триал" },
+        { "refId": "C", "expr": "sum(vpn_platform_subscriptions_segment{segment=\"trial_after_paid\",service=\"vpn-orchestrator\"})", "legendFormat": "триал после оплаты" },
+        { "refId": "D", "expr": "sum(vpn_platform_subscriptions_segment{segment=\"churned_paid\",service=\"vpn-orchestrator\"})", "legendFormat": "ушли платившие" },
+        { "refId": "E", "expr": "sum(vpn_platform_subscriptions_segment{segment=\"churned_trial\",service=\"vpn-orchestrator\"})", "legendFormat": "ушли с триала" },
+        { "refId": "F", "expr": "sum(vpn_platform_subscriptions_segment{segment=\"never_started\",service=\"vpn-orchestrator\"})", "legendFormat": "не начинали" },
+        { "refId": "G", "expr": "sum(vpn_platform_subscriptions_segment{segment=\"pending_revoke\",service=\"vpn-orchestrator\"})", "legendFormat": "ждут отзыва" }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "fixed", "fixedColor": "blue" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "платят сейчас" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
+          { "matcher": { "id": "byName", "options": "триал после оплаты" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } }] },
+          { "matcher": { "id": "byName", "options": "ушли платившие" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] },
+          { "matcher": { "id": "byName", "options": "ушли с триала" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] },
+          { "matcher": { "id": "byName", "options": "ждут отзыва" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "purple" } }] }
+        ]
+      }
+    },
+    {
       "type": "stat",
       "title": "Ноды живы / всего",
       "id": 4,

@@ -72,6 +72,22 @@ var (
 		Help: "User subscriptions by kind (trial/paid) and lifecycle (active/expired/total), based on expires_at vs now().",
 	}, []string{"kind", "lifecycle"})
 
+	// Сегменты пользователей — взаимоисключающие и покрывающие всех.
+	// Сумма по всем сегментам равна общему числу подписок, поэтому ни один
+	// человек не теряется между категориями.
+	//
+	// never_started   — завёл бота, подписку не оформлял
+	// trial_new       — первый триал, ни разу не платил
+	// trial_after_paid— вернулся на триал после оплаты
+	// paid_active     — активная платная подписка
+	// churned_trial   — ушёл, ни разу не платил
+	// churned_paid    — ушёл, платил
+	// pending_revoke  — срок вышел, доступ ещё не отозван
+	SubscriptionsBySegment = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_subscriptions_segment",
+		Help: "Users by mutually exclusive lifecycle segment.",
+	}, []string{"segment"})
+
 	// Уникальные пользователи с успешной оплатой в ТЕКУЩЕМ календарном месяце
 	// (карта + крипта). Обнуляется сама при смене месяца, потому что запрос
 	// привязан к date_trunc('month', now()).
@@ -210,6 +226,7 @@ func init() {
 		SubscriptionsByStatus,
 		SubscriptionsByLifecycle,
 		SubscriptionsRenewedThisMonth,
+		SubscriptionsBySegment,
 		NodeActiveUsers, NodeMaxUsers, NodeLoadPercent, NodeUp, NodeHeartbeatAgeSeconds,
 		NodesCount, PoolCapacityTotal, PoolActiveTotal, PoolItemsCount,
 		CryptoInvoicesByStatus, CryptoRevenueTotal, CryptoPaidCount,

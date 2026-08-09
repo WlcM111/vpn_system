@@ -130,6 +130,9 @@ func (a *App) handleMainMenuChoice(ctx context.Context, chatID int64, state *Cha
 	case btnGetConfig:
 		a.handleGetConfig(ctx, chatID, state)
 
+	case btnRotateToken:
+		a.handleRotateToken(ctx, chatID, state)
+
 	case btnServicesInfo:
 		a.handleServicesInfo(ctx, chatID, state)
 
@@ -588,6 +591,33 @@ func (a *App) handleClientChoice(ctx context.Context, chatID int64, state *ChatS
 	if err := a.sendSubscriptionLinksForUser(ctx, chatID); err != nil {
 		log.Printf("[tg-bot] sendSubscriptionLinksForUser error: %v", err)
 	}
+}
+
+// handleRotateToken запрашивает перевыпуск ссылки подписки.
+// Нужен, если ссылка попала не в те руки: старая сразу перестаёт работать.
+func (a *App) handleRotateToken(ctx context.Context, chatID int64, state *ChatState) {
+	if !a.kafkaEnabled() {
+		a.sendText(chatID, "Сейчас не получается перевыпустить ссылку 😔 Попробуйте позже.", mainMenuWithBackKeyboard())
+		return
+	}
+
+	cmd := &kafkacontracts.RotateTokenCommand{
+		Type:       kafkacontracts.SubscriptionCommandRotateToken,
+		CommandID:  uuid.NewString(),
+		TelegramID: chatID,
+		Reason:     "user_request",
+	}
+
+	if err := a.publishSubscriptionCommand(ctx, chatID, cmd); err != nil {
+		log.Printf("[tg-bot] publish rotate_token error: %v", err)
+		a.sendText(chatID, "Сейчас не получается перевыпустить ссылку 😔 Попробуйте позже.", mainMenuWithBackKeyboard())
+		return
+	}
+
+	a.sendText(chatID,
+		"🔑 Выпускаю новую ссылку, секунду…\n\n"+
+			"После этого старая ссылка перестанет работать — не забудьте обновить подписку в приложении.",
+		mainMenuWithBackKeyboard())
 }
 
 // sendMarkdown отправляет сообщение с Markdown-разметкой и клавиатурой.

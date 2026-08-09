@@ -136,6 +136,77 @@ func (c *MetricsCollector) collectHeavy(ctx context.Context) {
 	if err := c.collectRenewedThisMonth(cctx); err != nil {
 		slog.Warn("[metrics] collect renewed this month failed", "err", err)
 	}
+	if err := c.collectSegments(cctx); err != nil {
+		slog.Warn("[metrics] collect segments failed", "err", err)
+	}
+}
+
+// collectSegments раскладывает всех пользователей по взаимоисключающим
+// сегментам. Классификация идёт по двум независимым осям: что человек
+// использует сейчас (статус и срок) и платил ли он когда-либо.
+//
+// Порядок веток в CASE важен: сначала отсекаем истёкшие сроки, потом уже
+// разбираем живые подписки. Ветка ELSE не нужна — перечислены все статусы
+// схемы (none, trial, active, grace, expired), поэтому сумма сегментов
+// всегда равна общему числу строк.
+func (c *MetricsCollector) collectSegments(ctx context.Context) error {
+	rows, err := c.pool.Query(ctx, `
+		SELECT segment, count(*)
+		FROM (
+			SELECT
+				CASE
+					WHEN us.status = 'none' THEN 'never_started'
+					WHEN us.status IN ('trial','active','grace')
+					     AND (us.expires_at IS NULL OR us.expires_at <= now())
+					     THEN 'pending_revoke'
+					WHEN us.status = 'trial' AND EXISTS (
+						SELECT 1 FROM payments p
+						WHERE p.telegram_id = us.telegram_id AND p.status = 'succeeded'
+					) THEN 'trial_after_paid'
+					WHEN us.status = 'trial' THEN 'trial_new'
+					WHEN us.status IN ('active','grace') THEN 'paid_active'
+					WHEN us.status = 'expired' AND EXISTS (
+						SELECT 1 FROM payments p
+						WHERE p.telegram_id = us.telegram_id AND p.status = 'succeeded'
+					) THEN 'churned_paid'
+					ELSE 'churned_trial'
+				END AS segment
+			FROM user_subscriptions us
+		) t
+		GROUP BY segment
+	`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	// Обнуляем все сегменты заранее: если категория опустела, метрика должна
+	// показать 0, а не залипшее прошлое значение.
+	found := map[string]float64{
+		"never_started":    0,
+		"trial_new":        0,
+		"trial_after_paid": 0,
+		"paid_active":      0,
+		"churned_trial":    0,
+		"churned_paid":     0,
+		"pending_revoke":   0,
+	}
+	for rows.Next() {
+		var segment string
+		var cnt float64
+		if err := rows.Scan(&segment, &cnt); err != nil {
+			return err
+		}
+		found[segment] = cnt
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for segment, cnt := range found {
+		commonmetrics.SubscriptionsBySegment.WithLabelValues(segment).Set(cnt)
+	}
+	return nil
 }
 
 // collectRenewedThisMonth — сколько уникальных людей оплатили подписку в

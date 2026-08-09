@@ -32,7 +32,7 @@ import (
 // ============================================================================
 
 const (
-	expiredProfileTitle = "House VPN — истекла"
+	expiredProfileTitle = "House VPN — подписка истекла"
 
 	// Лимит Happ на длину announce.
 	announceMaxLen = 200
@@ -114,7 +114,11 @@ func writeExpiredSubscription(w http.ResponseWriter, feedFormat string) {
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Expires", "0")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Profile-Title", expiredProfileTitle)
+	// HTTP-заголовки обязаны быть ASCII: кириллица в них превращается в
+	// мусор при чтении клиентом. Формат base64 для profile-title описан
+	// в документации Happ и используется панелями (3x-ui и другими).
+	w.Header().Set("Profile-Title", "base64:"+
+		base64.StdEncoding.EncodeToString([]byte(expiredProfileTitle)))
 	w.Header().Set("Profile-Update-Interval", "6")
 	w.Header().Set("Announce", announce)
 	w.Header().Set("Support-Url", renew)
