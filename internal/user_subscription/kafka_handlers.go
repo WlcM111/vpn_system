@@ -73,6 +73,13 @@ func RunSubscriptionCommandsConsumer(ctx context.Context, reader *kafkago.Reader
 					}
 					return svc.HandleReferralRedeem(opCtx, &cmd)
 
+				case string(kafkacontracts.SubscriptionCommandRotateToken):
+					var cmd kafkacontracts.RotateTokenCommand
+					if err := json.Unmarshal(msg.Value, &cmd); err != nil {
+						return commonkafka.ErrSkip
+					}
+					return svc.HandleRotateToken(opCtx, &cmd)
+
 				default:
 					return commonkafka.ErrSkip
 				}

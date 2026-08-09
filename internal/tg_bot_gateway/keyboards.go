@@ -48,6 +48,8 @@ const (
 
 	// Выбор клиента при выдаче ключа. Happ/Incy первыми — они дают
 	// авто-настройку маршрутизации (российские сайты идут мимо VPN).
+	btnRotateToken = "🔑 Перевыпустить ссылку"
+
 	btnClientHapp = "⭐ Happ / Incy — рекомендуем"
 	btnClientXray = "v2RayTun / Streisand"
 
@@ -207,6 +209,9 @@ func mySubKeyboardWithConfig() tgbotapi.ReplyKeyboardMarkup {
 		tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton(btnGetConfig),
 			tgbotapi.NewKeyboardButton(btnCancelSub),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(btnRotateToken),
 		),
 		tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton(btnMainMenu),

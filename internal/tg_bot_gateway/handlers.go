@@ -38,6 +38,9 @@ func (a *App) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 	username := ""
 	if msg.From != nil {
 		username = msg.From.UserName
+		// Сохраняем ник и имя: без этого связаться с человеком можно только
+		// через запрос к API Telegram по каждому пользователю отдельно.
+		a.rememberUserProfile(ctx, msg.From)
 	}
 
 	log.Printf("[tg-bot] update chat=%d user=%s step=%s text=%q msg_id=%d",

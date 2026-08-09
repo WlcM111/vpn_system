@@ -9,7 +9,17 @@ const (
 	SubscriptionCommandCancel            SubscriptionCommandType = "subscription.cancel"
 	SubscriptionCommandReferralAttribute SubscriptionCommandType = "subscription.referral_attribute"
 	SubscriptionCommandReferralRedeem    SubscriptionCommandType = "subscription.referral_redeem"
+	SubscriptionCommandRotateToken       SubscriptionCommandType = "subscription.rotate_token"
 )
+
+// RotateTokenCommand — запрос на перевыпуск ссылки подписки.
+// Старая ссылка после обработки перестаёт работать.
+type RotateTokenCommand struct {
+	Type       SubscriptionCommandType `json:"type"`
+	CommandID  string                  `json:"command_id"`
+	TelegramID int64                   `json:"telegram_id"`
+	Reason     string                  `json:"reason,omitempty"`
+}
 
 type StartTrialCommand struct {
 	Type       SubscriptionCommandType `json:"type"`
