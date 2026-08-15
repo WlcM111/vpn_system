@@ -51,6 +51,12 @@ func (p *Producer) Reset() {
 		return
 	}
 	old := p.writer
+	if old == nil {
+		// Писателя нет — пересоздавать нечего, а обращение к old.Addr
+		// уронило бы процесс.
+		return
+	}
+
 	p.writer = &kafkago.Writer{
 		Addr:                   old.Addr,
 		Balancer:               &kafkago.Hash{},
@@ -58,9 +64,7 @@ func (p *Producer) Reset() {
 		BatchTimeout:           50 * time.Millisecond,
 		AllowAutoTopicCreation: false,
 	}
-	if old != nil {
-		_ = old.Close()
-	}
+	_ = old.Close()
 }
 
 func (p *Producer) PublishJSON(ctx context.Context, topic, key string, v any) error {

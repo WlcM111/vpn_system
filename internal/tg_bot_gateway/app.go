@@ -349,7 +349,7 @@ func (a *App) setTelegramWebhook(ctx context.Context, webhookURL string, secret 
 	if err != nil {
 		return fmt.Errorf("telegram setWebhook request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 

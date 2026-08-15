@@ -134,7 +134,7 @@ func (c *CryptoBotClient) CreateInvoice(
 	if err != nil {
 		return nil, nil, fmt.Errorf("cryptobot createInvoice http: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Лимит на размер ответа — защита от случайного 100 МБ ответа.
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -232,7 +232,7 @@ func (c *CryptoBotClient) GetExchangeRates(ctx context.Context) ([]ExchangeRate,
 	if err != nil {
 		return nil, fmt.Errorf("cryptobot getExchangeRates http: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
@@ -319,7 +319,7 @@ func (c *CryptoBotClient) CreateInvoiceFiat(
 	if err != nil {
 		return nil, nil, fmt.Errorf("cryptobot createInvoice(fiat) http: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {

@@ -1,0 +1,117 @@
+#!/bin/bash
+# Первичная настройка VPN-ноды.
+#
+# Выполняется один раз при первом запуске инстанса. Секреты берутся из SSM
+# по IAM-роли — в этом файле их нет.
+#
+# Лог: /var/log/cloud-init-output.log
+set -euo pipefail
+
+exec > >(tee /var/log/house-vpn-bootstrap.log) 2>&1
+echo "=== bootstrap начат $(date -Is) ==="
+
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update
+apt-get install -y ca-certificates curl gnupg unzip jq
+
+# --- Docker ---------------------------------------------------------------
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
+
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
+  > /etc/apt/sources.list.d/docker.list
+
+apt-get update
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+systemctl enable --now docker
+
+# --- AWS CLI (для чтения SSM) ---------------------------------------------
+curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o /tmp/awscli.zip
+unzip -q /tmp/awscli.zip -d /tmp
+/tmp/aws/install
+rm -rf /tmp/awscli.zip /tmp/aws
+
+# --- Секреты из SSM -------------------------------------------------------
+# Читаем все параметры своей ноды одним запросом и складываем в .env.
+SSM_PATH="/${project}/${node_name}"
+mkdir -p /opt/vpn-node-agent
+
+aws ssm get-parameters-by-path \
+  --path "$SSM_PATH" \
+  --with-decryption \
+  --region "${region}" \
+  --query 'Parameters[*].[Name,Value]' \
+  --output text | while IFS=$'\t' read -r name value; do
+    key="$(basename "$name")"
+    echo "$key=$value" >> /opt/vpn-node-agent/.env
+  done
+
+# Параметры, не хранящиеся в SSM.
+cat >> /opt/vpn-node-agent/.env <<'ENVEOF'
+XRAY_APPLY_MODE=api
+XRAY_API_ADDR=127.0.0.1:10085
+NODE_AGENT_STATE_PATH=/var/lib/vpn-node-agent/state.json
+NODE_AGENT_PENDING_PATH=/var/lib/vpn-node-agent/pending_events.json
+NODE_AGENT_HEARTBEAT_INTERVAL=30s
+NODE_AGENT_HTTP_ADDR=127.0.0.1:9091
+NODE_AGENT_TRAFFIC_INTERVAL=60s
+LOG_LEVEL=info
+ENVEOF
+
+chmod 600 /opt/vpn-node-agent/.env
+mkdir -p /var/lib/vpn-node-agent
+
+# --- Xray -----------------------------------------------------------------
+bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+
+# Минимальный конфиг: gRPC API для управления пользователями плюс WS-inbound.
+# Клиенты добавляются node-agent'ом через API, поэтому список пуст.
+cat > /usr/local/etc/xray/config.json <<'XRAYEOF'
+{
+  "log": { "loglevel": "warning", "access": "/var/log/xray/access.log", "error": "/var/log/xray/error.log" },
+  "api": { "tag": "api", "services": ["HandlerService", "StatsService"] },
+  "stats": {},
+  "policy": {
+    "levels": { "0": { "statsUserUplink": true, "statsUserDownlink": true } },
+    "system": { "statsInboundUplink": true, "statsInboundDownlink": true }
+  },
+  "inbounds": [
+    {
+      "tag": "api",
+      "listen": "127.0.0.1",
+      "port": 10085,
+      "protocol": "dokodemo-door",
+      "settings": { "address": "127.0.0.1" }
+    },
+    {
+      "tag": "vless-ws-in",
+      "listen": "127.0.0.1",
+      "port": 10000,
+      "protocol": "vless",
+      "settings": { "clients": [], "decryption": "none" },
+      "streamSettings": { "network": "ws", "wsSettings": { "path": "/ws" } }
+    }
+  ],
+  "outbounds": [{ "protocol": "freedom", "tag": "direct" }],
+  "routing": { "rules": [{ "type": "field", "inboundTag": ["api"], "outboundTag": "api" }] }
+}
+XRAYEOF
+
+systemctl enable --now xray
+
+# --- node-agent -----------------------------------------------------------
+docker pull "${ghcr_image}"
+
+docker run -d \
+  --name vpn-node-agent \
+  --restart unless-stopped \
+  --network host \
+  --env-file /opt/vpn-node-agent/.env \
+  -v /var/lib/vpn-node-agent:/var/lib/vpn-node-agent \
+  "${ghcr_image}"
+
+echo "=== bootstrap завершён $(date -Is) ==="
+echo "Нода начнёт слать heartbeat в течение 30 секунд."

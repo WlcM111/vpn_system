@@ -27,3 +27,12 @@ tmp/
 *.tmp
 *.swpproject_archive.zip
 *.zip
+
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform.lock.hcl
+crash.log
