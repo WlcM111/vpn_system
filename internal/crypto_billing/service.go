@@ -218,8 +218,8 @@ func (s *Service) buildPayLinkMessage(title, amount, asset, payURL string, expir
 	var sb strings.Builder
 	sb.WriteString("🪙 *Оплата криптовалютой*\n\n")
 	sb.WriteString("*" + title + "*\n")
-	sb.WriteString(fmt.Sprintf("Сумма: *%s %s*\n", amount, asset))
-	sb.WriteString(fmt.Sprintf("Счёт действует до: *%s UTC*\n\n", expiresAt.Format("02.01.2006 15:04")))
+	fmt.Fprintf(&sb, "Сумма: *%s %s*\n", amount, asset)
+	fmt.Fprintf(&sb, "Счёт действует до: *%s UTC*\n\n", expiresAt.Format("02.01.2006 15:04"))
 	sb.WriteString("Перейди по ссылке и подтверди оплату:\n")
 	sb.WriteString(payURL + "\n\n")
 	sb.WriteString("Как только платёж пройдёт, бот пришлёт подтверждение и ключи доступа.")
@@ -319,7 +319,7 @@ func (s *Service) ProcessWebhook(ctx context.Context, raw []byte, fingerprint st
 
 	inv, err := s.repo.GetInvoiceByInvoiceIDTx(ctx, tx, invoiceIDStr)
 	if err != nil {
-		return fmt.Errorf("%w: invoice_id=%s err=%v", ErrInvoiceNotFound, invoiceIDStr, err)
+		return fmt.Errorf("%w: invoice_id=%s err=%w", ErrInvoiceNotFound, invoiceIDStr, err)
 	}
 
 	// Валидация содержимого подписанного payload: статус должен быть paid, актив и сумма

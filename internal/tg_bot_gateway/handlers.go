@@ -557,6 +557,7 @@ func (a *App) handleClientChoice(ctx context.Context, chatID int64, state *ChatS
 		group = "happ"
 	case btnClientXray:
 		group = "xray"
+
 	case btnBack, btnMainMenu:
 		state.Step = StepMainMenu
 		_ = a.stateStore.Set(ctx, chatID, state)

@@ -493,7 +493,7 @@ func (s *Service) assertYooKassaPaymentPaid(ctx context.Context, paymentID strin
 	if err != nil {
 		return fmt.Errorf("verify yookassa payment http: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
@@ -951,7 +951,7 @@ func (s *Service) createYooKassaPayment(
 	if err != nil {
 		return nil, nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -1000,7 +1000,7 @@ func (s *Service) createRefund(
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
@@ -1261,5 +1261,5 @@ func (s *Service) notifyCardPaymentUnavailable(ctx context.Context, telegramID i
 
 	// Возврат ErrSkip сохранён: если billing-команда всё же попадёт в очередь,
 	// она не будет ретраиться 20 раз, а уйдёт в DLT.
-	return fmt.Errorf("%w: card payment unavailable: %v", commonkafka.ErrSkip, cause)
+	return fmt.Errorf("%w: card payment unavailable: %w", commonkafka.ErrSkip, cause)
 }

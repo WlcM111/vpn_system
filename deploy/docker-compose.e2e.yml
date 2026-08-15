@@ -1,0 +1,67 @@
+# Оверлей для E2E-тестов.
+#
+# Запуск:
+#   docker compose --env-file deploy/.env.e2e \
+#     -f deploy/docker-compose.dev.yml -f deploy/docker-compose.e2e.yml up -d
+#
+# Делает две вещи:
+#   1. billing ходит в стаб вместо боевого YooKassa;
+#   2. порты сдвинуты, чтобы окружение не конфликтовало с другими проектами
+#      на машине разработчика.
+#
+# Всё остальное — Kafka, БД, сервисы и логика — настоящее.
+
+# Отдельное имя проекта: иначе docker compose считает контейнеры соседних
+# проектов «осиротевшими» и предлагает их удалить.
+name: vpn-platform-e2e
+
+services:
+  yookassa-stub:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.yookassa-stub
+    # container_name намеренно не задан: фиксированное имя глобально в Docker
+    # и конфликтует при смене имени проекта. Пусть compose именует сам.
+    restart: unless-stopped
+    environment:
+      STUB_ADDR: ":8099"
+    ports: !override
+      - "127.0.0.1:58099:8099"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8099/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # !override заменяет список портов целиком. Без него Compose СКЛАДЫВАЕТ
+  # порты базового файла и оверлея, и старый 5432 остаётся занятым.
+  postgres:
+    ports: !override
+      - "127.0.0.1:55432:5432"
+
+  # Kafka анонсирует брокера адресом из KAFKA_ADVERTISED_LISTENERS, и клиент
+  # идёт именно по нему, а не по адресу, на который подключился изначально.
+  # Поэтому внешний порт обязан совпадать с анонсируемым: пробрасываем
+  # 19092 в 19092, а анонс переопределяем на localhost:19092.
+  kafka:
+    ports: !override
+      - "127.0.0.1:19092:19092"
+    environment:
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:19092
+
+  redis:
+    ports: !override
+      - "127.0.0.1:56379:6379"
+
+  billing-service:
+    environment:
+      YOOKASSA_API_BASE: "http://yookassa-stub:8099"
+    ports: !override
+      - "127.0.0.1:58082:8082"
+    depends_on:
+      yookassa-stub:
+        condition: service_healthy
+
+  vpn-orchestrator-service:
+    ports: !override
+      - "127.0.0.1:58084:8084"

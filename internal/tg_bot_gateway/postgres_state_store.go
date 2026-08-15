@@ -3,6 +3,7 @@ package tg_bot_gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -17,7 +18,7 @@ func (s *postgresStateStore) Get(ctx context.Context, telegramID int64) (*ChatSt
 	var raw []byte
 	err := s.pool.QueryRow(ctx, `SELECT state FROM tg_chat_states WHERE telegram_id=$1`, telegramID).Scan(&raw)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return &ChatState{Step: StepMainMenu}, nil
 		}
 		return nil, fmt.Errorf("get chat state: %w", err)

@@ -183,7 +183,7 @@ func (c *telegraphClient) call(ctx context.Context, method string, form map[stri
 	if err != nil {
 		return fmt.Errorf("telegraph %s http: %w", method, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
@@ -250,7 +250,7 @@ func urlEncode(s string) string {
 		case r == ' ':
 			b.WriteByte('+')
 		default:
-			b.WriteString(fmt.Sprintf("%%%02X", r))
+			fmt.Fprintf(&b, "%%%02X", r)
 		}
 	}
 	return b.String()
