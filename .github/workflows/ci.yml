@@ -12,13 +12,17 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Держим в актуальной версии: govulncheck падает на уязвимостях
-  # стандартной библиотеки, исправленных в свежих патчах.
-  GO_VERSION: "1.26"
+  # Точный патч, а не "1.26": setup-go подбирает старший доступный патч
+  # семейства, и он может отставать от версии, где закрыты уязвимости
+  # стандартной библиотеки. govulncheck это ловит и валит сборку.
+  #
+  # При появлении новых уязвимостей эту версию нужно поднимать — за этим
+  # следит еженедельный прогон security.yml.
+  GO_VERSION: "1.26.6"
 
 jobs:
   lint:
-    name: Линтеры
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,16 +45,19 @@ jobs:
         run: go vet ./...
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        # Экшен восьмой версии работает с golangci-lint второй мажорной
+        # версии — именно её формат использует .golangci.yml. Шестая ставила
+        # линтер v1, который такой конфиг прочитать не может.
+        #
+        # Версия зафиксирована намеренно: с latest сборка ломается при
+        # выходе новой версии линтера, хотя код не менялся.
+        uses: golangci/golangci-lint-action@v8
         with:
-          # После первого зелёного прогона стоит зафиксировать конкретную
-          # версию вместо latest — иначе обновление линтера может внезапно
-          # уронить CI на коде, который не менялся.
-          version: latest
+          version: v2.1.0
           args: --timeout=5m
 
   build:
-    name: Сборка
+    name: Build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -60,7 +67,7 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Сборка всех сервисов
+      - name: Build all services
         run: |
           for svc in billing-service crypto-billing-service tg-bot-gateway \
                      user-subscription-service vpn-orchestrator-service; do
@@ -70,7 +77,7 @@ jobs:
           done
 
   test:
-    name: Unit-тесты
+    name: Unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -80,16 +87,16 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Тесты с детектором гонок и покрытием
+      - name: Run tests with race detector and coverage
         run: go test ./... -race -count=1 -coverprofile=coverage.out -covermode=atomic
 
-      - name: Покрытие ключевых пакетов
+      - name: Coverage summary
         run: |
           go tool cover -func=coverage.out | tail -20
           echo "---"
           go tool cover -func=coverage.out | grep -E 'total:' || true
 
-      - name: Выгрузить отчёт о покрытии
+      - name: Upload coverage report
         uses: actions/upload-artifact@v4
         with:
           name: coverage
@@ -97,7 +104,7 @@ jobs:
           retention-days: 7
 
   integration:
-    name: Интеграционные тесты
+    name: Integration tests
     runs-on: ubuntu-latest
     # Требуют Docker и потому медленнее: не блокируем быстрые проверки.
     needs: [build]
@@ -111,11 +118,11 @@ jobs:
 
       # testcontainers-go сам управляет контейнерами через Docker,
       # который на ubuntu-latest уже установлен.
-      - name: Интеграционные тесты
+      - name: Run integration tests
         run: go test -tags=integration ./... -count=1 -timeout=15m
 
   govulncheck:
-    name: Уязвимости
+    name: Vulnerabilities
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -125,7 +132,7 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Проверка известных уязвимостей
+      - name: Scan for known vulnerabilities
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...

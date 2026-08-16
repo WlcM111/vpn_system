@@ -1,6 +1,6 @@
 # Builder: компилируем статический бинарь на Alpine с актуальной Go.
 # CGO_ENABLED=0 нужен для бинаря, который запустится в чистом alpine без glibc.
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /app
 

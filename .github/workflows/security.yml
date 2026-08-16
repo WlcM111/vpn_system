@@ -1,0 +1,28 @@
+name: Security
+
+on:
+  schedule:
+    # Каждый понедельник в 06:00 UTC. Новые уязвимости стандартной библиотеки
+    # обнаруживаются регулярно, и узнавать о них лучше заранее, а не в момент
+    # пуша несвязанной правки.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  govulncheck:
+    name: Vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # stable вместо пина: цель этого прогона — узнать о новых
+          # уязвимостях и о том, что пора поднимать версию в ci.yml.
+          go-version: stable
+          cache: true
+
+      - name: Scan for known vulnerabilities
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...

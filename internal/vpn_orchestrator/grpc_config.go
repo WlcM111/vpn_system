@@ -84,10 +84,14 @@ func grpcEndpointFromEnv() (GRPCEndpoint, bool) {
 	}, true
 }
 
-// selectGRPCForServer выбирает gRPC-эндпоинт для конкретного server_key из списка.
-// Приоритет: (1) привязанный к этому серверу; (2) глобальный (ServerKey==""); (3)
-// первый доступный. endpoints предполагается отфильтрованным по Enabled и
-// отсортированным по SortOrder, id (так отдаёт репозиторий).
+// selectGRPCForServer выбирает gRPC-эндпоинт для конкретного server_key.
+//
+// Приоритет: (1) эндпоинт, привязанный к этому серверу; (2) глобальный
+// (ServerKey == ""). Если ни того, ни другого нет — возвращает false;
+// фолбэка «первый попавшийся» нет намеренно (см. комментарий внутри функции).
+//
+// endpoints предполагается отфильтрованным по Enabled и отсортированным по
+// SortOrder, id (так отдаёт репозиторий).
 func selectGRPCForServer(endpoints []GRPCEndpoint, serverKey string) (GRPCEndpoint, bool) {
 	if len(endpoints) == 0 {
 		return GRPCEndpoint{}, false
