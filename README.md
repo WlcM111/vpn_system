@@ -181,6 +181,16 @@ the race detector, integration tests against a real database, and a
 vulnerability scan with `govulncheck`. A separate weekly workflow re-runs the
 vulnerability scan so newly disclosed issues surface before they block a push.
 
+## Architecture decisions
+
+Non-obvious choices are recorded in [`docs/adr/`](docs/adr/) — the situation
+that forced each decision, the options considered, and what it costs:
+
+- [Transactional outbox instead of direct publishing](docs/adr/0001-transactional-outbox.md)
+- [One agent per VPN node, not one per protocol](docs/adr/0002-single-agent-per-node.md)
+- [Access revocation independent of the billing provider](docs/adr/0003-access-revocation-independent-of-billing.md)
+- [AWS as an infrastructure-as-code demonstration, not production hosting](docs/adr/0004-aws-not-in-production.md)
+
 ## Infrastructure
 
 `deploy/terraform/` provisions a VPN node on AWS: EC2 on ARM, Elastic IP,
