@@ -6,33 +6,22 @@ import (
 )
 
 // ============================================================================
-// Выбор и добавление gRPC-ссылок в фид подписки с привязкой к серверам.
+// Загрузка gRPC-эндпоинтов (VLESS-over-gRPC).
 //
-// Логика идентична CDN: пользователю выдаётся набор серверов (по одному на страну,
-// наименее загруженные). Для КАЖДОГО уникального сервера подбирается привязанный к
-// нему gRPC-эндпоинт (или глобальный/первый, если персональной привязки нет).
-// Каждый уникальный эндпоинт добавляется в фид один раз (дедуп по grpc_key).
+// gRPC — не отдельная нода, а альтернативный транспорт к тому же exit-узлу
+// через nginx grpc_pass → xray vless-grpc-cdn-in. Эндпоинт ОБЯЗАН быть привязан
+// к server_key (см. selectGRPCForServer).
 //
-// Источник — таблица vpn_grpc_endpoints. Если она пуста, но задан GRPC_ADDRESS в
-// окружении — используется он (обратная совместимость с одним эндпоинтом).
+// Источник — таблица vpn_grpc_endpoints; при пустой таблице работает
+// env-фолбэк (GRPC_ADDRESS + GRPC_SERVER_KEY).
 // ============================================================================
 
-// grpcLinesForFeed формирует gRPC vless://-ссылки для фида пользователя.
-// feedItems — выбранные для пользователя пункты (с ServerKey и Credential).
-// Возвращает список готовых ссылок (может быть пустым, если gRPC выключен/не задан).
-func (s *Service) grpcLinesForFeed(ctx context.Context, feedItems []FeedItem) []string {
-	// Глобальный рубильник: GRPC_CONFIG_ENABLED=false полностью отключает выдачу.
-	if !grpcConfigEnabled() || len(feedItems) == 0 {
+// loadGRPCEndpoints отдаёт включённые gRPC-эндпоинты с учётом рубильника
+// GRPC_CONFIG_ENABLED и env-фолбэка.
+func (s *Service) loadGRPCEndpoints(ctx context.Context) []GRPCEndpoint {
+	if !grpcConfigEnabled() {
 		return nil
 	}
-
-	// UUID пользователя (одинаков для подбора любого эндпоинта — он валиден на узле).
-	userUUID := feedItems[0].Credential.VLESSUUID
-	if userUUID == "" {
-		return nil
-	}
-
-	// Загружаем эндпоинты из БД; при отсутствии — пробуем env-fallback.
 	endpoints, err := s.repo.ListEnabledGRPCEndpoints(ctx)
 	if err != nil {
 		slog.Error("load grpc endpoints failed", "err", err)
@@ -43,39 +32,5 @@ func (s *Service) grpcLinesForFeed(ctx context.Context, feedItems []FeedItem) []
 			endpoints = []GRPCEndpoint{envEndpoint}
 		}
 	}
-	if len(endpoints) == 0 {
-		return nil
-	}
-
-	// Уникальные server_key из выданных пользователю пунктов.
-	seenServers := make(map[string]struct{})
-	serverKeys := make([]string, 0, len(feedItems))
-	for _, item := range feedItems {
-		sk := item.PoolItem.ServerKey
-		if _, ok := seenServers[sk]; ok {
-			continue
-		}
-		seenServers[sk] = struct{}{}
-		serverKeys = append(serverKeys, sk)
-	}
-
-	// Для каждого сервера подбираем gRPC-эндпоинт; дедупим по grpc_key.
-	seenGRPC := make(map[string]struct{})
-	lines := make([]string, 0, len(serverKeys))
-	for _, sk := range serverKeys {
-		endpoint, ok := selectGRPCForServer(endpoints, sk)
-		if !ok {
-			continue
-		}
-		if _, dup := seenGRPC[endpoint.GRPCKey]; dup {
-			continue
-		}
-		url := BuildGRPCVLESSURLFromEndpoint(endpoint, userUUID)
-		if url == "" {
-			continue
-		}
-		seenGRPC[endpoint.GRPCKey] = struct{}{}
-		lines = append(lines, url)
-	}
-	return lines
+	return endpoints
 }

@@ -31,7 +31,8 @@ func TestSelectGRPCForServer(t *testing.T) {
 		{"нода без gRPC — чужой эндпоинт НЕ отдаём", bound, "fr-1", "", false},
 		{"пустой список", nil, "lt-1", "", false},
 		{"привязка приоритетнее глобального", withGlobal, "lt-1", "lt", true},
-		{"глобальный, когда своего нет", withGlobal, "fr-1", "global", true},
+		{"глобальный НЕ выдаётся ноде без привязки", withGlobal, "fr-1", "", false},
+		{"пустой serverKey", bound, "", "", false},
 	}
 
 	for _, tt := range tests {

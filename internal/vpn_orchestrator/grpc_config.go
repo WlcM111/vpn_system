@@ -68,7 +68,7 @@ func grpcEndpointFromEnv() (GRPCEndpoint, bool) {
 
 	return GRPCEndpoint{
 		GRPCKey:     "env",
-		ServerKey:   "", // глобальный
+		ServerKey:   strings.TrimSpace(os.Getenv("GRPC_SERVER_KEY")),
 		Enabled:     true,
 		SortOrder:   0,
 		InboundTag:  envOrDefault("GRPC_INBOUND_TAG", "vless-grpc-cdn-in"),
@@ -86,36 +86,22 @@ func grpcEndpointFromEnv() (GRPCEndpoint, bool) {
 
 // selectGRPCForServer выбирает gRPC-эндпоинт для конкретного server_key.
 //
-// Приоритет: (1) эндпоинт, привязанный к этому серверу; (2) глобальный
-// (ServerKey == ""). Если ни того, ни другого нет — возвращает false;
-// фолбэка «первый попавшийся» нет намеренно (см. комментарий внутри функции).
+// Привязка к серверу ОБЯЗАТЕЛЬНА, фолбэков нет (симметрично CDN и Hysteria):
+// UUID выписывается на пару (пользователь, item_key), поэтому эндпоинт чужой
+// ноды в паре с этим UUID даёт ссылку, которая видна в списке, но никогда не
+// подключится.
 //
 // endpoints предполагается отфильтрованным по Enabled и отсортированным по
 // SortOrder, id (так отдаёт репозиторий).
 func selectGRPCForServer(endpoints []GRPCEndpoint, serverKey string) (GRPCEndpoint, bool) {
-	if len(endpoints) == 0 {
+	if len(endpoints) == 0 || serverKey == "" {
 		return GRPCEndpoint{}, false
 	}
-
-	// 1) привязка к конкретному серверу
-	if serverKey != "" {
-		for _, e := range endpoints {
-			if e.ServerKey == serverKey {
-				return e, true
-			}
-		}
-	}
-
-	// 2) глобальный (без привязки) — только если он единственный вариант
 	for _, e := range endpoints {
-		if e.ServerKey == "" {
+		if e.ServerKey == serverKey {
 			return e, true
 		}
 	}
-
-	// 3) У этого сервера нет gRPC-эндпоинта. Отдавать чужой НЕЛЬЗЯ: ссылка
-	// укажет на другую ноду, где UUID пользователя не зарегистрирован, —
-	// в списке она появится, а подключение молча не заработает.
 	return GRPCEndpoint{}, false
 }
 

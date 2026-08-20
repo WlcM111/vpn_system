@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"log"
 	"log/slog"
 	"strings"
 	"time"
@@ -103,30 +102,13 @@ func (s *Service) RenderSubscriptionFeedDetailed(ctx context.Context, token stri
 		return nil, ErrAccessDenied
 	}
 
-	lines := make([]string, 0, len(feedItems)+1)
-	for _, item := range feedItems {
-		if strings.TrimSpace(item.URL) != "" {
-			lines = append(lines, item.URL)
-		}
-	}
+	// Строки фида собираются блоками по странам: основной профиль страны и
+	// сразу за ним все альтернативные транспорты ЭТОГО ЖЕ сервера (CDN → gRPC →
+	// Hysteria). Каждая ссылка получает UUID своего сервера — см. feed_builder.go.
+	lines := s.buildGroupedFeedLines(ctx, feedItems)
 	if len(lines) == 0 {
 		return nil, ErrAccessDenied
 	}
-
-	// CDN-конфигурации добавляются в общий фид с привязкой к серверам: для каждого
-	// выданного пользователю сервера подбирается привязанный к нему CDN (или
-	// глобальный/первый, если персональной привязки нет). UUID — тот же, что у
-	// обычных конфигов. Пользователь импортирует одну ссылку подписки.
-	lines = append(lines, s.cdnLinesForFeed(ctx, feedItems)...)
-
-	// gRPC-конфигурации — аналогично CDN: для каждого сервера подбирается gRPC-
-	// эндпоинт и добавляется в тот же фид.
-	lines = append(lines, s.grpcLinesForFeed(ctx, feedItems)...)
-
-	// Hysteria2 — UDP/QUIC-транспорт. Паролем выступает UUID пользователя,
-	// который проверяет node-agent при подключении. Так пользователь получает
-	// четыре транспорта (WS + XHTTP-CDN + gRPC + Hysteria) по одной подписке.
-	lines = append(lines, s.hysteriaLinesForFeed(ctx, feedItems)...)
 
 	// Сплит-роутинг: манифест компилируется под формат клиента.
 	// Fail-open — при любой проблеме строки пустые и всё работает как раньше.
@@ -312,31 +294,11 @@ func (s *Service) publishSyncCommands(ctx context.Context, tx pgx.Tx, access *Ac
 		serverByNode[nodeID] = item.PoolItem.ServerKey
 	}
 
-	// CDN-эндпоинты загружаем один раз для всех узлов: для каждого сервера
-	// пользователя нужно зарегистрировать его UUID не только в основном inbound,
-	// но и в CDN-inbound, иначе CDN-ссылка (XHTTP) не работает.
-	cdnEndpoints, cdnErr := s.repo.ListEnabledCDNEndpoints(ctx)
-	if cdnErr != nil {
-		log.Printf("publishSyncCommands: load cdn endpoints failed: %v", cdnErr)
-		cdnEndpoints = nil
-	}
-
-	// gRPC-эндпоинты — аналогично CDN: нужно зарегистрировать UUID пользователя в
-	// gRPC-inbound, иначе gRPC-ссылка из фида не работает.
-	grpcEndpoints, grpcErr := s.repo.ListEnabledGRPCEndpoints(ctx)
-	if grpcErr != nil {
-		log.Printf("publishSyncCommands: load grpc endpoints failed: %v", grpcErr)
-		grpcEndpoints = nil
-	}
-	// env-fallback (симметрично grpcLinesForFeed): если таблица пуста, но задан
-	// GRPC_ADDRESS — регистрируем пользователя в gRPC-inbound из окружения. Без
-	// этого gRPC, включённый только через env, генерирует ссылку, но не заводит
-	// UUID в inbound (профиль не долетает до узла).
-	if len(grpcEndpoints) == 0 {
-		if envEndpoint, ok := grpcEndpointFromEnv(); ok {
-			grpcEndpoints = []GRPCEndpoint{envEndpoint}
-		}
-	}
+	// Эндпоинты берём ТЕМИ ЖЕ загрузчиками, что и фид подписки: набор inbound'ов,
+	// куда регистрируется пользователь, обязан совпадать с набором ссылок, которые
+	// он получит. Разъезд здесь = ссылка есть, а UUID на узле не заведён.
+	cdnEndpoints := s.loadCDNEndpoints(ctx)
+	grpcEndpoints := s.loadGRPCEndpoints(ctx)
 
 	for nodeID, nodeItems := range byNode {
 		profiles := make([]kafkacontracts.VPNNodeUserProfile, 0, len(nodeItems)*2)
@@ -400,28 +362,11 @@ func (s *Service) publishRevokeCommands(ctx context.Context, tx pgx.Tx, telegram
 		serverByNode[cred.NodeID] = cred.ServerKey
 	}
 
-	// Те же CDN-эндпоинты, что и при выдаче: отзываем доступ и из CDN-inbound,
-	// чтобы на узле не оставалось активного UUID после потери доступа.
-	revokeCDNEndpoints, revokeCDNErr := s.repo.ListEnabledCDNEndpoints(ctx)
-	if revokeCDNErr != nil {
-		log.Printf("publishRevokeCommands: load cdn endpoints failed: %v", revokeCDNErr)
-		revokeCDNEndpoints = nil
-	}
-
-	// Те же gRPC-эндпоинты, что и при выдаче: отзываем доступ и из gRPC-inbound,
-	// чтобы на узле не оставалось активного UUID после потери доступа.
-	revokeGRPCEndpoints, revokeGRPCErr := s.repo.ListEnabledGRPCEndpoints(ctx)
-	if revokeGRPCErr != nil {
-		log.Printf("publishRevokeCommands: load grpc endpoints failed: %v", revokeGRPCErr)
-		revokeGRPCEndpoints = nil
-	}
-	// env-fallback (симметрично выдаче): если таблица пуста, но задан GRPC_ADDRESS —
-	// отзываем и из gRPC-inbound из окружения, чтобы UUID не завис на узле.
-	if len(revokeGRPCEndpoints) == 0 {
-		if envEndpoint, ok := grpcEndpointFromEnv(); ok {
-			revokeGRPCEndpoints = []GRPCEndpoint{envEndpoint}
-		}
-	}
+	// Те же эндпоинты и теми же загрузчиками, что и при выдаче: отзываем доступ
+	// из всех inbound'ов, куда пользователь был заведён, иначе на узле остаётся
+	// активный UUID после потери доступа.
+	revokeCDNEndpoints := s.loadCDNEndpoints(ctx)
+	revokeGRPCEndpoints := s.loadGRPCEndpoints(ctx)
 
 	for nodeID, nodeCreds := range byNode {
 		profiles := make([]kafkacontracts.VPNNodeUserProfile, 0, len(nodeCreds)*2)
@@ -545,6 +490,19 @@ func (s *Service) ApplyNodeTraffic(ctx context.Context, tx pgx.Tx, event *kafkac
 		return nil
 	}
 
+	// Трафик хранится ПО УЗЛАМ: у одного пользователя своя учётка на каждой ноде,
+	// и раньше значения разных нод затирали друг друга в одной строке по
+	// telegram_id. Ключ (telegram_id, node_id) убирает конфликт, а суммирование
+	// делается при чтении (Repository.GetUserTraffic).
+	nodeID := event.NodeID
+	if nodeID == "" {
+		nodeID = event.ServerKey
+	}
+	if nodeID == "" {
+		slog.Warn("node traffic event without node_id and server_key, skipped")
+		return nil
+	}
+
 	// Суммарный кумулятивный трафик узла (для Prometheus-метрики / дашборда).
 	var totalUplink, totalDownlink int64
 
@@ -552,7 +510,7 @@ func (s *Service) ApplyNodeTraffic(ctx context.Context, tx pgx.Tx, event *kafkac
 		if item.TelegramID == 0 {
 			continue
 		}
-		if err := s.repo.UpsertUserTrafficTx(ctx, tx, item.TelegramID, item.Uplink, item.Downlink); err != nil {
+		if err := s.repo.UpsertUserNodeTrafficTx(ctx, tx, item.TelegramID, nodeID, item.Uplink, item.Downlink); err != nil {
 			return err
 		}
 		totalUplink += item.Uplink

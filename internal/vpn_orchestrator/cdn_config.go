@@ -79,7 +79,7 @@ func cdnEndpointFromEnv() (CDNEndpoint, bool) {
 
 	return CDNEndpoint{
 		CDNKey:               "env",
-		ServerKey:            "", // глобальный
+		ServerKey:            strings.TrimSpace(os.Getenv("CDN_SERVER_KEY")),
 		Enabled:              true,
 		SortOrder:            0,
 		Address:              addr,
@@ -110,38 +110,23 @@ func envOrDefault(key, def string) string {
 
 // selectCDNForServer выбирает CDN-эндпоинт для конкретного server_key.
 //
-// Приоритет: (1) эндпоинт, привязанный к этому серверу; (2) глобальный
-// (ServerKey == ""). Если ни того, ни другого нет — возвращает false.
-//
-// Фолбэка «взять первый попавшийся» здесь нет намеренно: чужой эндпоинт дал бы
-// ссылку на ноду, где UUID пользователя не зарегистрирован. Ссылка появилась бы
-// в списке, а подключение молча не работало бы — худший вид отказа.
+// Привязка к серверу ОБЯЗАТЕЛЬНА. Никаких фолбэков — ни «глобальный», ни
+// «первый попавшийся»: UUID выписывается на пару (пользователь, item_key), то
+// есть на каждом сервере у пользователя СВОЙ UUID. Эндпоинт другой ноды в паре
+// с этим UUID даёт ссылку, которую в списке видно, а подключиться по ней нельзя
+// — худший вид отказа, потому что выглядит как проблема клиента.
 //
 // endpoints предполагается уже отфильтрованным по Enabled и отсортированным по
 // SortOrder, id (так отдаёт репозиторий).
 func selectCDNForServer(endpoints []CDNEndpoint, serverKey string) (CDNEndpoint, bool) {
-	if len(endpoints) == 0 {
+	if len(endpoints) == 0 || serverKey == "" {
 		return CDNEndpoint{}, false
 	}
-
-	// 1) привязка к конкретному серверу
-	if serverKey != "" {
-		for _, e := range endpoints {
-			if e.ServerKey == serverKey {
-				return e, true
-			}
-		}
-	}
-
-	// 2) глобальный CDN (без привязки) — только если он единственный вариант
 	for _, e := range endpoints {
-		if e.ServerKey == "" {
+		if e.ServerKey == serverKey {
 			return e, true
 		}
 	}
-
-	// 3) У этого сервера нет CDN-эндпоинта — см. комментарий в grpc_config.go:
-	// чужой эндпоинт означает ссылку на ноду, где пользователя нет.
 	return CDNEndpoint{}, false
 }
 

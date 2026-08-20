@@ -6,25 +6,23 @@ import (
 )
 
 // ============================================================================
-// Добавление Hysteria2-ссылок в фид подписки.
+// Загрузка Hysteria2-эндпоинтов.
 //
-// Для каждого уникального сервера из выданных пользователю пунктов подбирается
-// привязанный к нему Hysteria-эндпоинт. Если у сервера его нет — транспорт
-// просто не выдаётся (никаких подстановок чужих нод).
+// У Hysteria нет inbound'ов: пользователь не регистрируется на узле заранее,
+// вместо этого сервер при каждом подключении спрашивает node-agent по HTTP, а
+// паролем выступает VLESS-UUID пользователя. Именно поэтому привязка эндпоинта
+// к server_key критична: агент ищет UUID только в состоянии СВОЕЙ ноды.
+//
+// Источник — таблица vpn_hysteria_endpoints; при пустой таблице работает
+// env-фолбэк (HYSTERIA_ADDRESS + HYSTERIA_SERVER_KEY).
 // ============================================================================
 
-// hysteriaLinesForFeed формирует hysteria2://-ссылки для фида пользователя.
-func (s *Service) hysteriaLinesForFeed(ctx context.Context, feedItems []FeedItem) []string {
-	if !hysteriaConfigEnabled() || len(feedItems) == 0 {
+// loadHysteriaEndpoints отдаёт включённые Hysteria-эндпоинты с учётом
+// рубильника HYSTERIA_CONFIG_ENABLED и env-фолбэка.
+func (s *Service) loadHysteriaEndpoints(ctx context.Context) []HysteriaEndpoint {
+	if !hysteriaConfigEnabled() {
 		return nil
 	}
-
-	// UUID пользователя — он же пароль Hysteria: его проверяет node-agent.
-	userUUID := feedItems[0].Credential.VLESSUUID
-	if userUUID == "" {
-		return nil
-	}
-
 	endpoints, err := s.repo.ListEnabledHysteriaEndpoints(ctx)
 	if err != nil {
 		slog.Error("load hysteria endpoints failed", "err", err)
@@ -35,37 +33,5 @@ func (s *Service) hysteriaLinesForFeed(ctx context.Context, feedItems []FeedItem
 			endpoints = []HysteriaEndpoint{envEndpoint}
 		}
 	}
-	if len(endpoints) == 0 {
-		return nil
-	}
-
-	seenServers := make(map[string]struct{})
-	serverKeys := make([]string, 0, len(feedItems))
-	for _, item := range feedItems {
-		sk := item.PoolItem.ServerKey
-		if _, ok := seenServers[sk]; ok {
-			continue
-		}
-		seenServers[sk] = struct{}{}
-		serverKeys = append(serverKeys, sk)
-	}
-
-	seenHysteria := make(map[string]struct{})
-	lines := make([]string, 0, len(serverKeys))
-	for _, sk := range serverKeys {
-		endpoint, ok := selectHysteriaForServer(endpoints, sk)
-		if !ok {
-			continue
-		}
-		if _, dup := seenHysteria[endpoint.HysteriaKey]; dup {
-			continue
-		}
-		url := BuildHysteriaURL(endpoint, userUUID)
-		if url == "" {
-			continue
-		}
-		seenHysteria[endpoint.HysteriaKey] = struct{}{}
-		lines = append(lines, url)
-	}
-	return lines
+	return endpoints
 }

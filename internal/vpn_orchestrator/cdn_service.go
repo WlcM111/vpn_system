@@ -6,34 +6,28 @@ import (
 )
 
 // ============================================================================
-// Выбор и добавление CDN-ссылок в фид подписки с привязкой к серверам.
+// Загрузка CDN-эндпоинтов (VLESS-over-XHTTP фронтов).
 //
-// Логика: пользователю выдаётся набор серверов (по одному на страну, наименее
-// загруженные). Для КАЖДОГО уникального сервера подбирается привязанный к нему
-// CDN. Если у сервера нет персонального CDN — используется глобальный (без
-// привязки) либо первый доступный. Каждый уникальный CDN добавляется в фид один
-// раз (без дублей), с UUID пользователя.
+// CDN — не отдельная нода, а альтернативный вход на тот же exit-узел через
+// фронт, скрывающий реальный IP. Эндпоинт ОБЯЗАН быть привязан к server_key:
+// UUID пользователя выписывается на пару (пользователь, item_key), поэтому
+// ссылка на чужую ноду в паре с этим UUID никогда не подключится.
 //
-// Источник CDN — таблица vpn_cdn_endpoints. Если она пуста, но задан CDN_ADDRESS
-// в окружении — используется он (обратная совместимость с одним CDN).
+// Источник — таблица vpn_cdn_endpoints. Если она пуста, но задан CDN_ADDRESS
+// в окружении — используется он (привязка задаётся CDN_SERVER_KEY).
+//
+// Сборкой строк фида занимается buildGroupedFeedLines (feed_builder.go):
+// там же гарантируется, что каждому эндпоинту достаётся UUID именно того
+// сервера, к которому он привязан.
 // ============================================================================
 
-// cdnLinesForFeed формирует CDN vless://-ссылки для фида пользователя.
-// feedItems — выбранные для пользователя пункты (с ServerKey и Credential).
-// Возвращает список готовых ссылок (может быть пустым, если CDN выключен/не задан).
-func (s *Service) cdnLinesForFeed(ctx context.Context, feedItems []FeedItem) []string {
-	// Глобальный рубильник: CDN_CONFIG_ENABLED=false полностью отключает выдачу.
-	if !cdnConfigEnabled() || len(feedItems) == 0 {
+// loadCDNEndpoints отдаёт включённые CDN-эндпоинты с учётом глобального
+// рубильника CDN_CONFIG_ENABLED и env-фолбэка. Ошибки не возвращает: CDN —
+// дополнительный транспорт, из-за него подписка падать не должна.
+func (s *Service) loadCDNEndpoints(ctx context.Context) []CDNEndpoint {
+	if !cdnConfigEnabled() {
 		return nil
 	}
-
-	// UUID пользователя (одинаков для подбора любого CDN — он валиден на узле).
-	userUUID := feedItems[0].Credential.VLESSUUID
-	if userUUID == "" {
-		return nil
-	}
-
-	// Загружаем CDN-эндпоинты из БД; при отсутствии — пробуем env-fallback.
 	endpoints, err := s.repo.ListEnabledCDNEndpoints(ctx)
 	if err != nil {
 		slog.Error("load cdn endpoints failed", "err", err)
@@ -44,40 +38,5 @@ func (s *Service) cdnLinesForFeed(ctx context.Context, feedItems []FeedItem) []s
 			endpoints = []CDNEndpoint{envEndpoint}
 		}
 	}
-	if len(endpoints) == 0 {
-		return nil
-	}
-
-	// Собираем уникальные server_key из выданных пользователю пунктов.
-	seenServers := make(map[string]struct{})
-	serverKeys := make([]string, 0, len(feedItems))
-	for _, item := range feedItems {
-		sk := item.PoolItem.ServerKey
-		if _, ok := seenServers[sk]; ok {
-			continue
-		}
-		seenServers[sk] = struct{}{}
-		serverKeys = append(serverKeys, sk)
-	}
-
-	// Для каждого сервера подбираем CDN; дедупим итоговые ссылки по cdn_key,
-	// чтобы один и тот же CDN не попал в фид дважды.
-	seenCDN := make(map[string]struct{})
-	lines := make([]string, 0, len(serverKeys))
-	for _, sk := range serverKeys {
-		endpoint, ok := selectCDNForServer(endpoints, sk)
-		if !ok {
-			continue
-		}
-		if _, dup := seenCDN[endpoint.CDNKey]; dup {
-			continue
-		}
-		url := BuildCDNVLESSURLFromEndpoint(endpoint, userUUID)
-		if url == "" {
-			continue
-		}
-		seenCDN[endpoint.CDNKey] = struct{}{}
-		lines = append(lines, url)
-	}
-	return lines
+	return endpoints
 }

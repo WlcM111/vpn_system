@@ -681,55 +681,45 @@ func (r *Repository) AdvisoryUnlock(ctx context.Context, key int64) error {
 	return err
 }
 
-// UserTrafficRow — суммарный трафик пользователя (байты).
+// UserTrafficRow — суммарный трафик пользователя по всем узлам (байты).
 type UserTrafficRow struct {
 	Uplink   int64
 	Downlink int64
 }
 
-// UpsertUserTraffic обновляет кумулятивный трафик пользователя на конкретном узле.
-// Xray отдаёт кумулятив с момента своего старта; при рестарте Xray счётчик падает.
-// Чтобы не терять накопленное и не занижать при рестарте узла, берём GREATEST от
-// per-node максимума. Для простоты и корректности на один узел храним суммарно по
-// telegram_id: новое значение перезаписывает, только если оно больше текущего
-// (кумулятив монотонно растёт между рестартами Xray). При нескольких узлах это
-// даёт нижнюю оценку суммарного трафика, чего достаточно для отображения.
-func (r *Repository) UpsertUserTraffic(ctx context.Context, telegramID, uplink, downlink int64) error {
-	_, err := r.pool.Exec(ctx, `
-		INSERT INTO vpn_user_traffic (telegram_id, uplink, downlink, updated_at)
-		VALUES ($1, $2, $3, now())
-		ON CONFLICT (telegram_id) DO UPDATE SET
-			uplink = GREATEST(vpn_user_traffic.uplink, EXCLUDED.uplink),
-			downlink = GREATEST(vpn_user_traffic.downlink, EXCLUDED.downlink),
-			updated_at = now()
-	`, telegramID, uplink, downlink)
-	if err != nil {
-		return fmt.Errorf("upsert user traffic tg=%d: %w", telegramID, err)
-	}
-	return nil
-}
-
-// UpsertUserTrafficTx — версия для транзакции (C1).
-func (r *Repository) UpsertUserTrafficTx(ctx context.Context, tx pgx.Tx, telegramID, uplink, downlink int64) error {
+// UpsertUserNodeTrafficTx сохраняет кумулятивный трафик пользователя НА ОДНОМ УЗЛЕ.
+//
+// Ключ (telegram_id, node_id) обязателен: у пользователя своя учётка на каждой
+// ноде, и при хранении по одному telegram_id значения нод затирали друг друга —
+// показывался максимум одной ноды вместо суммы.
+//
+// GREATEST оставлен намеренно: node-agent присылает монотонно неубывающий
+// счётчик (он сам переносит показания в базу при рестарте Xray, см.
+// Agent.accumulateTraffic), поэтому GREATEST делает запись идемпотентной и
+// устойчивой к переупорядочиванию/повтору сообщений Kafka.
+func (r *Repository) UpsertUserNodeTrafficTx(ctx context.Context, tx pgx.Tx, telegramID int64, nodeID string, uplink, downlink int64) error {
 	_, err := tx.Exec(ctx, `
-		INSERT INTO vpn_user_traffic (telegram_id, uplink, downlink, updated_at)
-		VALUES ($1, $2, $3, now())
-		ON CONFLICT (telegram_id) DO UPDATE SET
-			uplink = GREATEST(vpn_user_traffic.uplink, EXCLUDED.uplink),
-			downlink = GREATEST(vpn_user_traffic.downlink, EXCLUDED.downlink),
+		INSERT INTO vpn_user_traffic_node (telegram_id, node_id, uplink, downlink, updated_at)
+		VALUES ($1, $2, $3, $4, now())
+		ON CONFLICT (telegram_id, node_id) DO UPDATE SET
+			uplink = GREATEST(vpn_user_traffic_node.uplink, EXCLUDED.uplink),
+			downlink = GREATEST(vpn_user_traffic_node.downlink, EXCLUDED.downlink),
 			updated_at = now()
-	`, telegramID, uplink, downlink)
+	`, telegramID, nodeID, uplink, downlink)
 	if err != nil {
-		return fmt.Errorf("upsert user traffic tx tg=%d: %w", telegramID, err)
+		return fmt.Errorf("upsert user node traffic tg=%d node=%s: %w", telegramID, nodeID, err)
 	}
 	return nil
 }
 
-// GetUserTraffic возвращает трафик пользователя. Если записи нет — нули (не ошибка).
+// GetUserTraffic возвращает суммарный трафик пользователя по всем узлам.
+// Если записей нет — нули (не ошибка).
 func (r *Repository) GetUserTraffic(ctx context.Context, telegramID int64) (UserTrafficRow, error) {
 	var row UserTrafficRow
 	err := r.pool.QueryRow(ctx, `
-		SELECT uplink, downlink FROM vpn_user_traffic WHERE telegram_id = $1
+		SELECT COALESCE(SUM(uplink), 0), COALESCE(SUM(downlink), 0)
+		FROM vpn_user_traffic_node
+		WHERE telegram_id = $1
 	`, telegramID).Scan(&row.Uplink, &row.Downlink)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
