@@ -77,11 +77,28 @@ type FeedItem struct {
 
 // ServerLoad — данные о ноде для балансировщика.
 type ServerLoad struct {
-	ServerKey       string
-	CountryCode     string
-	Enabled         bool
-	MaxUsers        int
-	ActiveUsers     int
+	ServerKey   string
+	CountryCode string
+	Enabled     bool
+	MaxUsers    int
+
+	// ActiveUsers — выданные учётные записи. Ёмкостная величина: используется
+	// как запасной вариант, пока нода не сообщила реальные подключения.
+	ActiveUsers int
+
+	// OnlineUsers — пользователи, реально передававшие данные за последний
+	// интервал. Приходит в heartbeat от агента.
+	OnlineUsers int
+
+	// UplinkBps/DownlinkBps — скорость трафика ноды на момент последнего
+	// heartbeat.
+	UplinkBps   int64
+	DownlinkBps int64
+
+	// BandwidthMbps — полоса канала. 0 означает «не задана»: тогда давление
+	// по каналу в расчёте не участвует.
+	BandwidthMbps int
+
 	Weight          int
 	LastHeartbeatAt *time.Time
 }
@@ -106,12 +123,44 @@ func (s ServerLoad) HasCapacity() bool {
 
 // LoadScore — «стоимость» ноды для least-load выбора. Чем меньше, тем предпочтительнее.
 // Загрузка нормируется на вес: (active_users + 1) / weight.
+// LoadScore — оценка загруженности ноды: чем меньше, тем свободнее.
+//
+// Учитывает два независимых давления и берёт большее из них: нода может быть
+// свободна по числу подключений и при этом упираться в канал, и наоборот.
+//
+// Пока нода не сообщила реальные подключения, расчёт опирается на выданные
+// учётные записи и совпадает с прежним поведением — старые ноды и ноды,
+// только что заведённые, не проваливаются в конец очереди.
 func (s ServerLoad) LoadScore() float64 {
 	w := s.Weight
 	if w <= 0 {
 		w = 1
 	}
-	return float64(s.ActiveUsers+1) / float64(w)
+
+	// Давление по пользователям. +1 сохраняет различимость пустых нод:
+	// при нулевом счёте все они дали бы одинаковый ноль, и выбор между
+	// ними стал бы произвольным.
+	conns := s.OnlineUsers
+	if conns <= 0 {
+		conns = s.ActiveUsers
+	}
+	score := float64(conns+1) / float64(w)
+
+	// Давление по каналу, приведённое к той же шкале через max_users:
+	// полностью занятый канал весит столько же, сколько полностью
+	// заполненная нода.
+	if s.BandwidthMbps > 0 && s.MaxUsers > 0 {
+		capacityBps := float64(s.BandwidthMbps) * 1_000_000
+		usedBps := float64(s.UplinkBps + s.DownlinkBps)
+		if usedBps > 0 {
+			bwScore := usedBps / capacityBps * float64(s.MaxUsers+1) / float64(w)
+			if bwScore > score {
+				score = bwScore
+			}
+		}
+	}
+
+	return score
 }
 
 func (r *Repository) GetAccessByToken(ctx context.Context, token string) (*AccessState, error) {
@@ -220,7 +269,8 @@ func (r *Repository) LoadServersByCountry(ctx context.Context) (map[string][]Ser
 	rows, err := r.pool.Query(ctx, `
 		SELECT s.server_key, s.country_code, s.enabled, s.max_users,
 		       COALESCE(a.active_users, 0) AS active_users,
-		       s.weight, s.last_heartbeat_at
+		       s.weight, s.last_heartbeat_at,
+		       s.online_users, s.uplink_bps, s.downlink_bps, s.bandwidth_mbps
 		FROM vpn_servers s
 		LEFT JOIN (
 			SELECT server_key, COUNT(*) AS active_users
@@ -239,7 +289,8 @@ func (r *Repository) LoadServersByCountry(ctx context.Context) (map[string][]Ser
 	for rows.Next() {
 		var s ServerLoad
 		if err := rows.Scan(&s.ServerKey, &s.CountryCode, &s.Enabled,
-			&s.MaxUsers, &s.ActiveUsers, &s.Weight, &s.LastHeartbeatAt); err != nil {
+			&s.MaxUsers, &s.ActiveUsers, &s.Weight, &s.LastHeartbeatAt,
+			&s.OnlineUsers, &s.UplinkBps, &s.DownlinkBps, &s.BandwidthMbps); err != nil {
 			return nil, fmt.Errorf("scan server load: %w", err)
 		}
 		out[s.CountryCode] = append(out[s.CountryCode], s)
@@ -505,14 +556,24 @@ func (r *Repository) UpdateNodeHeartbeat(ctx context.Context, nodeID string, ser
 }
 
 // UpdateNodeHeartbeatTx — версия для транзакции (C1).
-func (r *Repository) UpdateNodeHeartbeatTx(ctx context.Context, tx pgx.Tx, nodeID string, serverKey string, at time.Time) error {
+// NodeLoadReport — показатели нагрузки, приходящие в heartbeat.
+type NodeLoadReport struct {
+	OnlineUsers int
+	UplinkBps   int64
+	DownlinkBps int64
+}
+
+func (r *Repository) UpdateNodeHeartbeatTx(ctx context.Context, tx pgx.Tx, nodeID string, serverKey string, at time.Time, load NodeLoadReport) error {
 	_, err := tx.Exec(ctx, `
 		UPDATE vpn_servers
 		SET last_heartbeat_at = $3,
+		    online_users = $4,
+		    uplink_bps = $5,
+		    downlink_bps = $6,
 		    updated_at = now()
 		WHERE node_id = $1
 		  AND ($2 = '' OR server_key = $2)
-	`, nodeID, serverKey, at.UTC())
+	`, nodeID, serverKey, at.UTC(), load.OnlineUsers, load.UplinkBps, load.DownlinkBps)
 	if err != nil {
 		return fmt.Errorf("update node heartbeat tx: %w", err)
 	}
@@ -804,7 +865,11 @@ type AdminNodeRequest struct {
 	Flow              string `json:"flow"`
 	MaxUsers          int    `json:"max_users"`
 	Weight            int    `json:"weight"`
-	Enabled           bool   `json:"enabled"`
+	// BandwidthMbps — полоса канала ноды, Мбит/с. Учитывается при расчёте
+	// нагрузки: нода, упирающаяся в канал, перестаёт получать новых
+	// пользователей, даже если по их числу она свободна. 0 = не задана.
+	BandwidthMbps int  `json:"bandwidth_mbps"`
+	Enabled       bool `json:"enabled"`
 }
 
 type AdminPoolItemRequest struct {

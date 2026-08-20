@@ -335,9 +335,10 @@ func (c *MetricsCollector) collectSubscriptionLifecycle(ctx context.Context) err
 func (c *MetricsCollector) collectNodes(ctx context.Context) error {
 	rows, err := c.pool.Query(ctx, `
 		SELECT s.server_key, s.country_code, s.title, s.enabled,
-		       s.max_users,
-		       COALESCE(a.active_users, 0) AS active_users,
-		       s.last_heartbeat_at
+			s.max_users,
+			COALESCE(a.active_users, 0) AS active_users,
+			s.last_heartbeat_at,
+			s.online_users, s.uplink_bps, s.downlink_bps, s.bandwidth_mbps
 		FROM vpn_servers s
 		LEFT JOIN (
 			SELECT server_key, COUNT(*) AS active_users
@@ -358,6 +359,9 @@ func (c *MetricsCollector) collectNodes(ctx context.Context) error {
 	commonmetrics.NodeLoadPercent.Reset()
 	commonmetrics.NodeUp.Reset()
 	commonmetrics.NodeHeartbeatAgeSeconds.Reset()
+	commonmetrics.NodeTrafficBps.Reset()
+	commonmetrics.NodeOnlineUsers.Reset()
+	commonmetrics.NodeBandwidthPercent.Reset()
 
 	var (
 		totalEnabled, totalDisabled, totalAlive, totalStale int
@@ -367,16 +371,29 @@ func (c *MetricsCollector) collectNodes(ctx context.Context) error {
 
 	for rows.Next() {
 		var (
-			serverKey, country, title string
-			enabled                   bool
-			maxUsers, activeUsers     int
-			lastHB                    *time.Time
+			serverKey, country, title  string
+			enabled                    bool
+			maxUsers, activeUsers      int
+			lastHB                     *time.Time
+			onlineUsers, bandwidthMbps int
+			uplinkBps, downlinkBps     int64
 		)
-		if err := rows.Scan(&serverKey, &country, &title, &enabled, &maxUsers, &activeUsers, &lastHB); err != nil {
+		if err := rows.Scan(&serverKey, &country, &title, &enabled, &maxUsers, &activeUsers, &lastHB,
+			&onlineUsers, &uplinkBps, &downlinkBps, &bandwidthMbps); err != nil {
 			return err
 		}
 
 		lbl := []string{serverKey, country, title}
+
+		commonmetrics.NodeOnlineUsers.WithLabelValues(lbl...).Set(float64(onlineUsers))
+		commonmetrics.NodeTrafficBps.WithLabelValues(serverKey, country, title, "uplink").Set(float64(uplinkBps))
+		commonmetrics.NodeTrafficBps.WithLabelValues(serverKey, country, title, "downlink").Set(float64(downlinkBps))
+
+		bwPct := 0.0
+		if bandwidthMbps > 0 {
+			bwPct = float64(uplinkBps+downlinkBps) / (float64(bandwidthMbps) * 1_000_000) * 100.0
+		}
+		commonmetrics.NodeBandwidthPercent.WithLabelValues(lbl...).Set(bwPct)
 
 		commonmetrics.NodeActiveUsers.WithLabelValues(lbl...).Set(float64(activeUsers))
 		commonmetrics.NodeMaxUsers.WithLabelValues(lbl...).Set(float64(maxUsers))

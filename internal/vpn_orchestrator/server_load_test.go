@@ -57,6 +57,56 @@ func TestServerLoadHasCapacity(t *testing.T) {
 	}
 }
 
+// Давление по каналу учитывается наравне с числом подключений: нода может
+// быть свободна по пользователям и при этом задыхаться от одного качальщика.
+func TestServerLoadScoreUsesBandwidth(t *testing.T) {
+	// Канал 100 Мбит/с, занято 90 Мбит/с, пользователей мало.
+	loaded := ServerLoad{
+		OnlineUsers: 2, MaxUsers: 100, Weight: 100,
+		BandwidthMbps: 100,
+		UplinkBps:     40_000_000,
+		DownlinkBps:   50_000_000,
+	}
+	// Та же нода без нагрузки на канал.
+	idle := ServerLoad{
+		OnlineUsers: 2, MaxUsers: 100, Weight: 100,
+		BandwidthMbps: 100,
+	}
+
+	if loaded.LoadScore() <= idle.LoadScore() {
+		t.Errorf("занятый канал должен повышать оценку: loaded=%v idle=%v",
+			loaded.LoadScore(), idle.LoadScore())
+	}
+}
+
+// Пока нода не сообщила реальные подключения, расчёт обязан совпадать с
+// прежним поведением — иначе только что заведённые ноды провалятся в конец
+// очереди и не получат ни одного пользователя.
+func TestServerLoadScoreFallsBackToActiveUsers(t *testing.T) {
+	withOnline := ServerLoad{OnlineUsers: 9, ActiveUsers: 50, Weight: 10}
+	if got := withOnline.LoadScore(); got != 1.0 {
+		t.Errorf("при известных подключениях = %v, ожидалось 1.0", got)
+	}
+
+	noOnline := ServerLoad{OnlineUsers: 0, ActiveUsers: 9, Weight: 10}
+	if got := noOnline.LoadScore(); got != 1.0 {
+		t.Errorf("без подключений должен использоваться ActiveUsers: %v", got)
+	}
+}
+
+// Полоса не задана — давление по каналу не участвует в расчёте.
+func TestServerLoadScoreIgnoresTrafficWithoutBandwidth(t *testing.T) {
+	s := ServerLoad{
+		OnlineUsers: 1, MaxUsers: 100, Weight: 10,
+		BandwidthMbps: 0,
+		UplinkBps:     900_000_000,
+		DownlinkBps:   900_000_000,
+	}
+	if got := s.LoadScore(); got != 0.2 {
+		t.Errorf("LoadScore() = %v, ожидалось 0.2 (трафик игнорируется)", got)
+	}
+}
+
 func TestServerLoadScore(t *testing.T) {
 	tests := []struct {
 		name string

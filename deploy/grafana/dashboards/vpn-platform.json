@@ -1092,6 +1092,54 @@
       }
     },
     {
+      "type": "bargauge",
+      "title": "Загрузка канала нод (%)",
+      "id": 32,
+      "gridPos": {
+        "h": 8,
+        "w": 10,
+        "x": 0,
+        "y": 31
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "vpn_platform_node_bandwidth_percent{service=\"vpn-orchestrator\"}",
+          "refId": "A",
+          "legendFormat": "{{title}} ({{country}})",
+          "instant": true
+        }
+      ],
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 60 },
+              { "color": "red", "value": 85 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
       "type": "table",
       "title": "Детали нод",
       "id": 31,
@@ -1135,6 +1183,18 @@
           "refId": "E",
           "format": "table",
           "instant": true
+        },
+        {
+          "expr": "vpn_platform_node_online_users{service=\"vpn-orchestrator\"}",
+          "refId": "F",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "expr": "vpn_platform_node_bandwidth_percent{service=\"vpn-orchestrator\"}",
+          "refId": "G",
+          "format": "table",
+          "instant": true
         }
       ],
       "transformations": [
@@ -1149,21 +1209,76 @@
           "id": "organize",
           "options": {
             "excludeByName": {
-              "Time": true,
-              "__name__": true,
-              "job": true,
-              "instance": true,
+              "Time 1": true,
+              "Time 2": true,
+              "Time 3": true,
+              "Time 4": true,
+              "Time 5": true,
+              "Time 6": true,
+              "Time 7": true,
+              "__name__ 1": true,
+              "__name__ 2": true,
+              "__name__ 3": true,
+              "__name__ 4": true,
+              "__name__ 5": true,
+              "__name__ 6": true,
+              "__name__ 7": true,
+              "job 1": true,
+              "job 2": true,
+              "job 3": true,
+              "job 4": true,
+              "job 5": true,
+              "job 6": true,
+              "job 7": true,
+              "instance 1": true,
+              "instance 2": true,
+              "instance 3": true,
+              "instance 4": true,
+              "instance 5": true,
+              "instance 6": true,
+              "instance 7": true,
+              "service 1": true,
+              "service 2": true,
+              "service 3": true,
+              "service 4": true,
+              "service 5": true,
+              "service 6": true,
+              "service 7": true,
+              "country 2": true,
+              "country 3": true,
+              "country 4": true,
+              "country 5": true,
+              "country 6": true,
+              "country 7": true,
+              "title 2": true,
+              "title 3": true,
+              "title 4": true,
+              "title 5": true,
+              "title 6": true,
+              "title 7": true,
+              "Value #B": true,
               "server_key": false
             },
+            "indexByName": {
+              "title 1": 0,
+              "country 1": 1,
+              "Value #F": 2,
+              "Value #A": 3,
+              "Value #C": 4,
+              "Value #G": 5,
+              "Value #D": 6,
+              "Value #E": 7
+            },
             "renameByName": {
-              "title": "Нода",
-              "country": "Страна",
+              "title 1": "Нода",
+              "country 1": "Страна",
               "server_key": "Ключ",
-              "Value #A": "Активные",
-              "Value #B": "Лимит",
-              "Value #C": "Загрузка %",
+              "Value #A": "Учётки",
+              "Value #C": "Заполнение %",
               "Value #D": "Жива",
-              "Value #E": "Heartbeat (сек)"
+              "Value #E": "Heartbeat (сек)",
+              "Value #F": "Онлайн",
+              "Value #G": "Канал %"
             }
           }
         }
@@ -1294,9 +1409,9 @@
       },
       "targets": [
         {
-          "expr": "rate(vpn_platform_node_traffic_bytes{service=\"vpn-orchestrator\"}[5m]) * 8",
+          "expr": "vpn_platform_node_traffic_bps{service=\"vpn-orchestrator\"} * 8",
           "refId": "A",
-          "legendFormat": "{{server_key}} {{direction}}"
+          "legendFormat": "{{title}} — {{direction}}"
         }
       ],
       "options": {
@@ -1337,7 +1452,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "### Трафик\n\nМетрика `vpn_platform_node_traffic_bytes` наполняется **node-agent'ом**, который читает Xray Stats API на каждой ноде и публикует объём по пользователям/нодам.\n\nЕсли график пуст — node-agent ещё не настроен на сбор трафика (этап развития). Связь нод и живость при этом видны в разделе «Нагрузка нод» по heartbeat."
+        "content": "### Трафик\n\nМетрика `vpn_platform_node_traffic_bps` — скорость трафика ноды в байтах в секунду. Node-agent считает её как разницу счётчиков инбаундов Xray между двумя heartbeat и присылает в центр.\n\nЭта же величина участвует в расчёте нагрузки: нода, упирающаяся в канал, перестаёт получать новых пользователей, даже когда по их числу она свободна."
       }
     },
     {

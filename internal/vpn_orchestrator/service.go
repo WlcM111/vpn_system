@@ -531,7 +531,12 @@ func (s *Service) ApplyNodeHeartbeat(ctx context.Context, tx pgx.Tx, event *kafk
 	if event == nil {
 		return nil
 	}
-	return s.repo.UpdateNodeHeartbeatTx(ctx, tx, event.NodeID, event.ServerKey, event.CreatedAt)
+	return s.repo.UpdateNodeHeartbeatTx(ctx, tx, event.NodeID, event.ServerKey, event.CreatedAt,
+		NodeLoadReport{
+			OnlineUsers: event.OnlineUsers,
+			UplinkBps:   event.UplinkBps,
+			DownlinkBps: event.DownlinkBps,
+		})
 }
 
 // ApplyNodeTraffic сохраняет кумулятивный трафик пользователей, присланный узлом.

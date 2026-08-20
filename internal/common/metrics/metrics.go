@@ -170,6 +170,26 @@ var (
 	// источник — Xray Stats API на ноде, который node-agent должен публиковать.
 	// Кумулятивный трафик по узлам (uplink/downlink), выставляется в ApplyNodeTraffic
 	// из событий node-agent (P5). Используется панелью «Трафик по нодам».
+	// Скорость трафика ноды, байт/с. Приходит в heartbeat от агента как
+	// разница счётчиков инбаундов между двумя опросами.
+	NodeTrafficBps = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_node_traffic_bps",
+		Help: "Node traffic rate in bytes per second by direction.",
+	}, []string{"server_key", "country", "title", "direction"})
+
+	// Пользователи, реально передававшие данные за последний интервал.
+	// Отличается от node_active_users, который считает выданные учётки.
+	NodeOnlineUsers = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_node_online_users",
+		Help: "Users that actually transferred data during the last interval.",
+	}, []string{"server_key", "country", "title"})
+
+	// Загрузка канала в процентах от заявленной полосы.
+	NodeBandwidthPercent = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_node_bandwidth_percent",
+		Help: "Node bandwidth utilisation as a percentage of the configured capacity.",
+	}, []string{"server_key", "country", "title"})
+
 	NodeTrafficBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "vpn_platform_node_traffic_bytes",
 		Help: "Node traffic in bytes by direction (uplink/downlink). Populated by node-agent (future).",
@@ -230,7 +250,10 @@ func init() {
 		NodeActiveUsers, NodeMaxUsers, NodeLoadPercent, NodeUp, NodeHeartbeatAgeSeconds,
 		NodesCount, PoolCapacityTotal, PoolActiveTotal, PoolItemsCount,
 		CryptoInvoicesByStatus, CryptoRevenueTotal, CryptoPaidCount,
-		NodeTrafficBytes, MetricsCollectorLastRun,
+		NodeTrafficBytes,
+		NodeTrafficBps,
+		NodeOnlineUsers,
+		NodeBandwidthPercent, MetricsCollectorLastRun,
 		// S12: метрики масштабируемости
 		KafkaConsumerLag, OutboxDepth, OutboxFailedTotal, PostgresLockWaits, PostgresConnectionsInUse,
 	)
