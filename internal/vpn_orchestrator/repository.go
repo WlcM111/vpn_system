@@ -904,8 +904,9 @@ func (r *Repository) UpsertAdminNode(ctx context.Context, req AdminNodeRequest) 
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO vpn_servers (
 			server_key, node_id, country_code, title, public_host, port, transport, security,
-			default_inbound_tag, host_header, sni, ws_path, flow, enabled, max_users, weight
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+			default_inbound_tag, host_header, sni, ws_path, flow, enabled, max_users, weight,
+			bandwidth_mbps
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 		ON CONFLICT (server_key) DO UPDATE SET
 			node_id=EXCLUDED.node_id,
 			country_code=EXCLUDED.country_code,
@@ -922,8 +923,9 @@ func (r *Repository) UpsertAdminNode(ctx context.Context, req AdminNodeRequest) 
 			enabled=EXCLUDED.enabled,
 			max_users=EXCLUDED.max_users,
 			weight=EXCLUDED.weight,
+			bandwidth_mbps=EXCLUDED.bandwidth_mbps,
 			updated_at=now()
-	`, req.ServerKey, req.NodeID, req.CountryCode, req.Title, req.PublicHost, req.Port, req.Transport, req.Security, req.DefaultInboundTag, req.HostHeader, req.SNI, req.WSPath, req.Flow, req.Enabled, req.MaxUsers, req.Weight)
+    `, req.ServerKey, req.NodeID, req.CountryCode, req.Title, req.PublicHost, req.Port, req.Transport, req.Security, req.DefaultInboundTag, req.HostHeader, req.SNI, req.WSPath, req.Flow, req.Enabled, req.MaxUsers, req.Weight, req.BandwidthMbps)
 	return err
 }
 
