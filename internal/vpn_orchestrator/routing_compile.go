@@ -296,10 +296,18 @@ func compileHappRoutingB64(m *RoutingManifest) string {
 		payload.DomesticDNSDomain = m.DNS.DomesticDoH
 	}
 	// Если в манифесте заданы свои гео-ссылки — используем их.
-	if m.GeoRules.Enabled && m.GeoRules.GeoIPURL != "" {
+	//
+	// Условие geo_rules.enabled здесь снято намеренно. Ссылки и правила — не
+	// одно и то же: enabled включает правила geosite:/geoip:, а ссылки нужны
+	// всегда, потому что активация профиля в Happ гейтится успешной загрузкой
+	// файлов (см. комментарий к LastUpdated). С дефолтными ссылками на GitHub
+	// загрузка ~30 МБ из России растягивается на минуты, и всё это время
+	// сплит-роутинг у пользователя не применён: трафик идёт мимо правил.
+	// Своё зеркало на ноде отдаёт те же файлы за секунды.
+	if m.GeoRules.GeoIPURL != "" {
 		payload.Geoipurl = m.GeoRules.GeoIPURL
 	}
-	if m.GeoRules.Enabled && m.GeoRules.GeoSiteURL != "" {
+	if m.GeoRules.GeoSiteURL != "" {
 		payload.Geositeurl = m.GeoRules.GeoSiteURL
 	}
 

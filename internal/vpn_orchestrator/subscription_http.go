@@ -90,7 +90,10 @@ func (h *HTTPHandlers) handleSubscriptionFeed(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Expires", "0")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Profile-Title", "House VPN")
-	w.Header().Set("Profile-Update-Interval", "24")
+	// Интервал автообновления подписки в часах. 5 вместо суток: правки
+	// манифеста маршрутизации и состава узлов доезжают до пользователей
+	// в тот же день, а не на следующий.
+	w.Header().Set("Profile-Update-Interval", "5")
 	// Сплит-роутинг: правила приезжают клиенту вместе с подпиской и
 	// применяются автоматически. Пустое значение — роутинг не настроен,
 	// подписка отдаётся как обычно (fail-open).

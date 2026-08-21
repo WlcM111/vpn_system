@@ -32,9 +32,10 @@ func RunCleanup(ctx context.Context, pool *pgxpool.Pool) {
 	interval := envDurationCleanup("OUTBOX_CLEANUP_INTERVAL", time.Hour)
 	outboxTTL := envDurationCleanup("OUTBOX_PUBLISHED_TTL", 7*24*time.Hour)
 	inboxTTL := envDurationCleanup("INBOX_PROCESSED_TTL", 30*24*time.Hour)
+	syncTTL := envDurationCleanup("NODE_SYNC_RESULTS_TTL", 14*24*time.Hour)
 
 	// первый прогон сразу
-	cleanupOnce(ctx, pool, outboxTTL, inboxTTL)
+	cleanupOnce(ctx, pool, outboxTTL, inboxTTL, syncTTL)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -43,12 +44,12 @@ func RunCleanup(ctx context.Context, pool *pgxpool.Pool) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			cleanupOnce(ctx, pool, outboxTTL, inboxTTL)
+			cleanupOnce(ctx, pool, outboxTTL, inboxTTL, syncTTL)
 		}
 	}
 }
 
-func cleanupOnce(ctx context.Context, pool *pgxpool.Pool, outboxTTL, inboxTTL time.Duration) {
+func cleanupOnce(ctx context.Context, pool *pgxpool.Pool, outboxTTL, inboxTTL, syncTTL time.Duration) {
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -81,6 +82,24 @@ func cleanupOnce(ctx context.Context, pool *pgxpool.Pool, outboxTTL, inboxTTL ti
 		slog.Error("consumer_attempts cleanup failed", "err", err)
 	} else if n := ct.RowsAffected(); n > 0 {
 		slog.Info("consumer_attempts cleanup done", "deleted_attempts", n)
+	}
+
+	// Журнал результатов синхронизации узлов. Растёт на несколько тысяч строк
+	// в сутки и до сих пор не чистился ничем: нужен только для диагностики
+	// последних дней. Таблица может отсутствовать (общий пакет используют и
+	// сервисы без неё) — тогда шаг молча пропускается.
+	if syncTTL > 0 {
+		ct, err = pool.Exec(cctx, `
+			DELETE FROM vpn_node_sync_results
+			WHERE created_at < now() - $1::interval
+		`, intervalString(syncTTL))
+		if err != nil {
+			if !strings.Contains(err.Error(), "does not exist") {
+				slog.Error("node sync results cleanup failed", "err", err)
+			}
+		} else if n := ct.RowsAffected(); n > 0 {
+			slog.Info("node sync results cleanup done", "deleted_sync_results", n)
+		}
 	}
 }
 

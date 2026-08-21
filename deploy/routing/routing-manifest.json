@@ -1,35 +1,35 @@
 {
-    "version": 2,
-    "name": "House VPN RU",
-    "dns": {
-      "domestic_ip": "77.88.8.8",
-      "domestic_doh": "https://77.88.8.8/dns-query",
-      "remote_ip": "8.8.8.8",
-      "remote_doh": "https://8.8.8.8/dns-query"
-    },
-    "direct_domains": [
-      "regexp:.*\\.ru$",
-      "regexp:.*\\.xn--p1ai$"
-    ],
-    "direct_ips": [
-      "10.0.0.0/8",
-      "172.16.0.0/12",
-      "192.168.0.0/16",
-      "127.0.0.0/8",
-      "169.254.0.0/16",
-      "224.0.0.0/4",
-      "::1/128",
-      "fc00::/7",
-      "fe80::/10"
-    ],
-    "proxy_domains": [],
-    "proxy_ips": [],
-    "block_domains": [],
-    "geo_rules": {
-      "enabled": false,
-      "direct_sites": ["geosite:category-ru"],
-      "direct_ips": ["geoip:ru"],
-      "geoip_url": "",
-      "geosite_url": ""
-    }
+  "version": 2,
+  "name": "House VPN RU",
+  "dns": {
+    "domestic_ip": "77.88.8.8",
+    "domestic_doh": "https://77.88.8.8/dns-query",
+    "remote_ip": "8.8.8.8",
+    "remote_doh": "https://8.8.8.8/dns-query"
+  },
+  "direct_domains": [
+    "domain:ru",
+    "domain:xn--p1ai"
+  ],
+  "direct_ips": [
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "127.0.0.0/8",
+    "169.254.0.0/16",
+    "224.0.0.0/4",
+    "::1/128",
+    "fc00::/7",
+    "fe80::/10"
+  ],
+  "proxy_domains": [],
+  "proxy_ips": [],
+  "block_domains": [],
+  "geo_rules": {
+    "enabled": false,
+    "direct_sites": ["geosite:category-ru"],
+    "direct_ips": ["geoip:ru"],
+    "geoip_url": "https://race-src.com/geo/geoip.dat",
+    "geosite_url": "https://race-src.com/geo/geosite.dat"
   }
+}
