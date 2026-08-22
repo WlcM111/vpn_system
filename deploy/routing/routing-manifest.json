@@ -8,8 +8,8 @@
     "remote_doh": "https://8.8.8.8/dns-query"
   },
   "direct_domains": [
-    "domain:ru",
-    "domain:xn--p1ai"
+    "regexp:.*\\.ru$",
+    "regexp:.*\\.xn--p1ai$"
   ],
   "direct_ips": [
     "10.0.0.0/8",
