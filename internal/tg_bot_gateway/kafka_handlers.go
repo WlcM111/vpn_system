@@ -75,8 +75,41 @@ func (a *App) sendKafkaNotificationToUser(n *kafkacontracts.TgNotification) erro
 	}
 
 	if _, err := a.bot.Send(msg); err != nil {
+		if undeliverableTelegramError(err) {
+			// Ошибка невосстановимая: пользователь заблокировал бота, удалил
+			// аккаунт или чата не существует. Возвращать её консьюмеру нельзя —
+			// он уйдёт в бесконечный ретрай, не закоммитит offset и навсегда
+			// оставит лаг на партиции, а в DLT сообщение при этом не попадёт.
+			// Считаем обработанным и идём дальше.
+			log.Printf("[tg-bot] notification to user %d dropped as undeliverable: %v", n.TelegramID, err)
+			return nil
+		}
 		log.Printf("[tg-bot] failed to send kafka notification to user %d: %v", n.TelegramID, err)
 		return fmt.Errorf("send telegram notification: %w", err)
 	}
 	return nil
+}
+
+// undeliverableTelegramError отличает временный сбой (сеть, 5xx, флуд-лимит)
+// от постоянного, который не исправится сам никогда. Повторять доставку во
+// втором случае бессмысленно: адресат недоступен навсегда.
+func undeliverableTelegramError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"bot was blocked by the user",
+		"user is deactivated",
+		"chat not found",
+		"peer_id_invalid",
+		"user_is_blocked",
+		"bot can't initiate conversation",
+		"chat_write_forbidden",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }
