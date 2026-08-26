@@ -769,6 +769,33 @@ func scanCredential(row pgx.Row) (*UserCredential, error) {
 	return &cred, nil
 }
 
+// ListEnabledCredentialsForNodeTx отдаёт включённые учётки пользователя на
+// одном узле. Нужен для частичных операций над доступом (например, снятие
+// только CDN-учётки при исчерпании квоты), где полный список кредов по всем
+// узлам был бы избыточным и опасным.
+func (r *Repository) ListEnabledCredentialsForNodeTx(ctx context.Context, tx pgx.Tx, telegramID int64, nodeID string) ([]UserCredential, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT telegram_id, item_key, server_key, node_id, inbound_tag,
+		       email, vless_uuid, access_rev, enabled
+		FROM vpn_user_node_credentials
+		WHERE telegram_id = $1 AND node_id = $2 AND enabled = true
+	`, telegramID, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("list credentials tg=%d node=%s: %w", telegramID, nodeID, err)
+	}
+	defer rows.Close()
+
+	var out []UserCredential
+	for rows.Next() {
+		cred, err := scanCredential(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan credential: %w", err)
+		}
+		out = append(out, *cred)
+	}
+	return out, rows.Err()
+}
+
 func buildEmail(telegramID int64, itemKey string) string {
 	clean := strings.NewReplacer("@", "-", "/", "-", " ", "-", ":", "-").Replace(itemKey)
 	return "tg-" + strconv.FormatInt(telegramID, 10) + "-" + clean + "@vpn-platform.local"

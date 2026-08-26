@@ -9,7 +9,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // ============================================================================
@@ -38,17 +37,45 @@ const (
 	happGeoSiteURL = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
 )
 
-// manifestVersionStamp возвращает метку времени версии манифеста для поля
-// LastUpdated. Берётся из времени изменения файла-манифеста: правка манифеста
-// меняет метку, клиент видит новую версию и переприменяет профиль.
-func manifestVersionStamp() int64 {
+// routingGeoEpoch — фиксированная точка отсчёта метки LastUpdated
+// (2026-01-01T00:00:00Z). Значение константно и меняться не должно: от него
+// откладывается version манифеста.
+const routingGeoEpoch int64 = 1767225600
+
+// routingGeoVersionStep — шаг между версиями манифеста, секунды (сутки).
+const routingGeoVersionStep int64 = 86400
+
+// manifestVersionStamp возвращает метку LastUpdated для профиля Happ.
+//
+// Раньше бралось время изменения файла-манифеста. Это давало ложные
+// срабатывания: mtime меняется при каждом передеплое и при любом touch, даже
+// когда правила остались прежними. По документации Happ метка позже
+// сохранённой форсирует загрузку геофайлов, а активация профиля гейтится её
+// успешным завершением (таймаут 3 минуты, потом ошибка). То есть каждый
+// передеплой отправлял всех пользователей качать геобазы заново, и всё это
+// время сплит-роутинг у них не был применён — трафик шёл мимо правил. Ровно
+// так и выглядела жалоба «иногда нужно заново загрузить геофайлы и
+// переподключиться».
+//
+// Теперь метка детерминированно выводится из поля version манифеста: она
+// переживает рестарт, передеплой и пересоздание контейнера, а растёт ТОЛЬКО
+// когда версию подняли осознанно. Правка списков доменов версии не требует —
+// инлайн-правила едут в самом профиле и применяются без загрузки файлов.
+// Версию поднимают тогда, когда клиентам действительно надо перекачать
+// геобазы (сменились ссылки или обновилось содержимое зеркала).
+//
+// Фолбэк на mtime сохранён для манифестов без поля version.
+func manifestVersionStamp(m *RoutingManifest) int64 {
+	if m != nil && m.Version > 0 {
+		return routingGeoEpoch + int64(m.Version)*routingGeoVersionStep
+	}
 	path := routingManifestPath()
 	if path == "" {
-		return time.Now().Unix()
+		return routingGeoEpoch
 	}
 	st, err := os.Stat(path)
 	if err != nil {
-		return time.Now().Unix()
+		return routingGeoEpoch
 	}
 	return st.ModTime().Unix()
 }
@@ -273,7 +300,7 @@ func compileHappRoutingB64(m *RoutingManifest) string {
 		Geositeurl: happGeoSiteURL,
 		// Метка времени = версия манифеста. Меняется при каждой правке файла,
 		// поэтому клиент перекачает гео-файлы и переприменит профиль.
-		LastUpdated:    strconv.FormatInt(manifestVersionStamp(), 10),
+		LastUpdated:    strconv.FormatInt(manifestVersionStamp(m), 10),
 		RouteOrder:     "block-proxy-direct",
 		DirectSites:    directSites,
 		DirectIp:       directIPs,

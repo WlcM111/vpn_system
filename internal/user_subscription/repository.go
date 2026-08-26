@@ -249,51 +249,124 @@ func (r *Repository) BeginTx(ctx context.Context) (pgx.Tx, error) {
 	return r.pool.Begin(ctx)
 }
 
-func (r *Repository) StartTrialTx(ctx context.Context, tx pgx.Tx, telegramID int64, country string, trialDays int) (*SubscriptionState, bool, error) {
+// StartTrialTx выдаёт пробный период. Ключевые инварианты:
+//
+//  1. Триал выдаётся РОВНО ОДИН РАЗ за всё время. Защита двухуровневая: флаг
+//     trial_used под FOR UPDATE (сериализует параллельные запросы на строке) и
+//     UNIQUE (telegram_id, source, business_key) в subscription_grants —
+//     инвариант держит БД, а не последовательность if-ов в Go.
+//
+//  2. Дни триала СКЛАДЫВАЮТСЯ с оплаченным сроком, а не заменяют его. База
+//     отсчёта — GREATEST(текущий expires_at, now), поэтому эффективный срок
+//     никогда не уменьшается: ни при позднем событии, ни при повторе, ни при
+//     выдаче триала поверх действующей подписки.
+//
+//  3. Платная подписка не понижается до триала. Если у пользователя активная
+//     оплата, статус и current_plan_code остаются платными, а триал только
+//     добавляет дни: иначе автопродление и отчётность увидели бы «триал» там,
+//     где на самом деле оплата.
+//
+// Льготный период (grace) — сознательное исключение: это состояние принадлежит
+// платёжному контуру (ретраи + grace_until), и вмешательство в него из триала
+// смешало бы два владельца одного жизненного цикла. Триал остаётся невыданным
+// и доступным позже — он не «сгорает».
+func (r *Repository) StartTrialTx(ctx context.Context, tx pgx.Tx, telegramID int64, country string, trialDays int) (TrialGrantResult, error) {
+	if trialDays <= 0 {
+		return TrialGrantResult{}, fmt.Errorf("start trial tx: non-positive trial days %d", trialDays)
+	}
 	if err := r.ensureUserAndStateTx(ctx, tx, telegramID, country); err != nil {
-		return nil, false, err
+		return TrialGrantResult{}, err
 	}
 
 	s, err := r.getStateForUpdateTx(ctx, tx, telegramID)
 	if err != nil {
-		return nil, false, err
+		return TrialGrantResult{}, err
 	}
 
-	if s.TrialUsed || s.Status == StatusTrial || s.Status == StatusActive || s.Status == StatusGrace {
-		return s, false, nil
+	res := TrialGrantResult{State: s, TrialDays: trialDays}
+
+	if s.TrialUsed {
+		res.Outcome = TrialAlreadyUsed
+		res.PaidActiveBefore = s.Status == StatusActive
+		return res, nil
+	}
+	if s.Status == StatusGrace {
+		res.Outcome = TrialDeferredGrace
+		res.PaidActiveBefore = true
+		return res, nil
 	}
 
 	now := time.Now().UTC()
-	expiresAt := now.Add(time.Duration(trialDays) * 24 * time.Hour)
 
-	if _, err := tx.Exec(ctx, `
+	// Единственная авторитетная точка отсчёта — БД: GREATEST внутри SQL, а не
+	// вычисление в Go по прочитанному ранее значению. Так между чтением и
+	// записью не может вклиниться конкурирующее продление.
+	paidActive := s.Status == StatusActive && s.ExpiresAt != nil && s.ExpiresAt.After(now)
+	res.PaidActiveBefore = paidActive
+
+	newStatus := string(StatusTrial)
+	if paidActive {
+		newStatus = string(StatusActive)
+	}
+
+	var newExpiresAt time.Time
+	if err := tx.QueryRow(ctx, `
 		UPDATE user_subscriptions
 		SET status = $2,
-			current_plan_code = $3,
+			-- Платный план не затирается триалом: подменять его значило бы
+			-- потерять сведения о том, что именно оплатил пользователь.
+			current_plan_code = CASE WHEN $6 THEN current_plan_code ELSE $3 END,
 			trial_used = true,
-			started_at = $4,
-			expires_at = $5,
+			started_at = COALESCE(started_at, $4),
+			expires_at = GREATEST(COALESCE(expires_at, $4), $4) + make_interval(days => $5),
 			grace_until = NULL,
-			canceled_at = NULL,
-			last_payment_id = NULL,
-			auto_renew_enabled = false,
-			cancel_at_period_end = false,
+			canceled_at = CASE WHEN $6 THEN canceled_at ELSE NULL END,
+			last_payment_id = CASE WHEN $6 THEN last_payment_id ELSE NULL END,
+			auto_renew_enabled = CASE WHEN $6 THEN auto_renew_enabled ELSE false END,
+			cancel_at_period_end = CASE WHEN $6 THEN cancel_at_period_end ELSE false END,
 			access_rev = access_rev + 1,
 			updated_at = now()
 		WHERE telegram_id = $1
-	`, telegramID, string(StatusTrial), TrialPlanCode, now, expiresAt); err != nil {
-		return nil, false, fmt.Errorf("update trial subscription tx: %w", err)
+		RETURNING expires_at
+	`, telegramID, newStatus, TrialPlanCode, now, trialDays, paidActive).Scan(&newExpiresAt); err != nil {
+		return TrialGrantResult{}, fmt.Errorf("update trial subscription tx: %w", err)
 	}
 
-	if _, err := r.ensureTokenTx(ctx, tx, telegramID, &expiresAt); err != nil {
-		return nil, false, err
+	// Запись в журнал — часть ТОЙ ЖЕ транзакции. UNIQUE не даст создать вторую
+	// запись даже при гонке; конфликт означает, что триал уже выдан, и весь
+	// апдейт откатывается вместе с транзакцией.
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO subscription_grants (
+			telegram_id, source, business_key, duration_days,
+			effective_from, effective_until, granted_at
+		)
+		VALUES ($1, 'trial', 'trial', $2, $3, $4, $3)
+		ON CONFLICT (telegram_id, source, business_key) DO NOTHING
+	`, telegramID, trialDays, now, newExpiresAt.UTC())
+	if err != nil {
+		return TrialGrantResult{}, fmt.Errorf("record trial grant tx: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		// Журнал уже содержит триал, а флаг в подписке его не показывал —
+		// значит строка подписки была пересоздана. Начисление отменяем.
+		return TrialGrantResult{}, fmt.Errorf("trial grant already recorded for tg=%d: refusing to grant twice", telegramID)
+	}
+
+	if _, err := r.ensureTokenTx(ctx, tx, telegramID, &newExpiresAt); err != nil {
+		return TrialGrantResult{}, err
 	}
 
 	s, err = r.getStateForUpdateTx(ctx, tx, telegramID)
 	if err != nil {
-		return nil, false, err
+		return TrialGrantResult{}, err
 	}
-	return s, true, nil
+	res.State = s
+	if paidActive {
+		res.Outcome = TrialGrantedOnTopOfPaid
+	} else {
+		res.Outcome = TrialGranted
+	}
+	return res, nil
 }
 
 func (r *Repository) ActivatePaidTx(ctx context.Context, tx pgx.Tx, telegramID int64, country, planCode string, durationDays int, paymentID string, autoRenewEnabled bool) (*SubscriptionState, bool, error) {
@@ -326,24 +399,48 @@ func (r *Repository) ActivatePaidTx(ctx context.Context, tx pgx.Tx, telegramID i
 		return s, false, nil
 	}
 
-	now := time.Now().UTC()
-	base := now
-	if s.ExpiresAt != nil && s.ExpiresAt.After(now) {
-		base = *s.ExpiresAt
+	if durationDays <= 0 {
+		return nil, false, fmt.Errorf("activate paid tx: non-positive duration %d", durationDays)
 	}
-	newExpiresAt := base.Add(time.Duration(durationDays) * 24 * time.Hour)
+
+	now := time.Now().UTC()
+
+	// Журнал начислений — источник инварианта «один платёж = одно начисление».
+	// Пишем ДО обновления срока: конфликт по UNIQUE означает, что этот платёж
+	// уже учтён, и продлевать второй раз нельзя.
+	if paymentID != "" {
+		tag, gErr := tx.Exec(ctx, `
+			INSERT INTO subscription_grants (
+				telegram_id, source, business_key, duration_days,
+				effective_from, effective_until, granted_at
+			)
+			VALUES ($1, 'paid', $2, $3, $4, $4 + make_interval(days => $3), $4)
+			ON CONFLICT (telegram_id, source, business_key) DO NOTHING
+		`, telegramID, paymentID, durationDays, now)
+		if gErr != nil {
+			return nil, false, fmt.Errorf("record paid grant tx: %w", gErr)
+		}
+		if tag.RowsAffected() == 0 {
+			return s, false, nil
+		}
+	}
 
 	// Семантика: успешный платёж может только ВКЛЮЧИТЬ автопродление и сбросить
 	// cancel_at_period_end, но не может их выключить. Это нужно, чтобы платёж криптой
 	// (где AutoRenewEnabled=false) не выключал YooKassa-автопродление, если пользователь
 	// его раньше включил. Явное выключение автопродления идёт через
 	// HandleBillingAutoRenewDisabled / HandleBillingPaymentMethodUnbound / HandleCancel.
-	if _, err := tx.Exec(ctx, `
+	// Продление считается в SQL от GREATEST(expires_at, now): база берётся из
+	// строки под блокировкой, а не из значения, прочитанного выше. Иначе две
+	// одновременно подтверждённые покупки могли бы посчитаться от одной базы,
+	// и одна из длительностей потерялась бы (lost update).
+	var newExpiresAt time.Time
+	if err := tx.QueryRow(ctx, `
 		UPDATE user_subscriptions
 		SET status = $2,
 			current_plan_code = $3,
 			started_at = COALESCE(started_at, $4),
-			expires_at = $5,
+			expires_at = GREATEST(COALESCE(expires_at, $4), $4) + make_interval(days => $5),
 			grace_until = NULL,
 			canceled_at = NULL,
 			last_payment_id = $6,
@@ -352,7 +449,8 @@ func (r *Repository) ActivatePaidTx(ctx context.Context, tx pgx.Tx, telegramID i
 			access_rev = access_rev + 1,
 			updated_at = now()
 		WHERE telegram_id = $1
-	`, telegramID, string(StatusActive), planCode, now, newExpiresAt, paymentID, autoRenewEnabled); err != nil {
+		RETURNING expires_at
+	`, telegramID, string(StatusActive), planCode, now, durationDays, paymentID, autoRenewEnabled).Scan(&newExpiresAt); err != nil {
 		return nil, false, fmt.Errorf("activate paid subscription tx: %w", err)
 	}
 

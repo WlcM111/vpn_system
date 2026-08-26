@@ -31,6 +31,10 @@ type ServiceConfig struct {
 	DefaultMaxUsers  int           // лимит пользователей на ноду по умолчанию
 	DefaultWeight    int           // вес ноды по умолчанию
 	SoftOverflow     bool          // выдавать переполненную ноду вместо отказа
+
+	// CDNQuota — политика лимита CDN-трафика (20 GB на пользователя на ноду).
+	// Выключенная политика полностью сохраняет прежнее поведение.
+	CDNQuota CDNQuotaPolicy
 }
 
 type Service struct {
@@ -231,12 +235,46 @@ func (s *Service) selectBalancedItems(ctx context.Context, telegramID int64) ([]
 	return selected, nil
 }
 
+// buildCDNProfile строит CDN-профиль пользователя для узла.
+//
+// Ключевое отличие от прошлой версии: у CDN-учётки СОБСТВЕННЫЙ email. Xray
+// ведёт счётчик трафика по email (user>>><email>>>>traffic>>>*), а не по
+// инбаунду, поэтому при общем email CDN- и не-CDN-байты физически неразделимы
+// и учесть квоту было невозможно. Суффикс -cdn изолирует счётчик, не затрагивая
+// ни UUID, ни остальные транспорты.
+//
+// Возвращает (профиль, true), только если для сервера подобран CDN-эндпоинт и
+// email удалось построить.
+func buildCDNProfile(base kafkacontracts.VPNNodeUserProfile, serverKey string, cdnEndpoints []CDNEndpoint) (kafkacontracts.VPNNodeUserProfile, bool) {
+	endpoint, ok := selectCDNForServer(cdnEndpoints, serverKey)
+	if !ok {
+		return kafkacontracts.VPNNodeUserProfile{}, false
+	}
+	cdnInbound := endpoint.InboundTag
+	if cdnInbound == "" {
+		cdnInbound = "vless-xhttp-cdn-in"
+	}
+	profile := base
+	profile.InboundTag = cdnInbound
+	profile.Optional = true
+	// Если email построить не удалось — оставляем базовый: лучше потерять
+	// точность учёта, чем выдать пользователю нерабочую учётку.
+	if isolated := cdnEmail(base.Email); isolated != "" {
+		profile.Email = isolated
+	}
+	return profile, true
+}
+
 // buildUserProfiles формирует профили пользователя для одного узла: основной
-// (base) плюс CDN-вариант (тот же base, но с CDN inbound и Optional=true), если
-// для сервера подобран CDN-эндпоинт. Дедуп по (inbound_tag|email): если CDN-inbound
-// совпал с основным — второй профиль не добавляется. Единый источник логики для
-// publishSyncCommands и publishRevokeCommands (IM-2: убирает дублирование).
-func (s *Service) buildUserProfiles(base kafkacontracts.VPNNodeUserProfile, serverKey string, cdnEndpoints []CDNEndpoint, grpcEndpoints []GRPCEndpoint) []kafkacontracts.VPNNodeUserProfile {
+// (base) плюс CDN- и gRPC-варианты (Optional=true), если для сервера подобраны
+// соответствующие эндпоинты. Дедуп по (inbound_tag|email). Единый источник
+// логики для publishSyncCommands и publishRevokeCommands (IM-2).
+//
+// skipCDN=true исключает CDN-профиль из ЖЕЛАЕМОГО состояния. Используется, когда
+// CDN-квота пользователя на этом узле исчерпана: иначе ближайший reconcile
+// вернул бы отключённую учётку обратно. На путь ОТЗЫВА этот флаг не подаётся —
+// снимать надо в том числе и CDN-учётку.
+func (s *Service) buildUserProfiles(base kafkacontracts.VPNNodeUserProfile, serverKey string, cdnEndpoints []CDNEndpoint, grpcEndpoints []GRPCEndpoint, skipCDN bool) []kafkacontracts.VPNNodeUserProfile {
 	seen := make(map[string]struct{}, 3)
 	out := make([]kafkacontracts.VPNNodeUserProfile, 0, 3)
 	add := func(p kafkacontracts.VPNNodeUserProfile) {
@@ -250,15 +288,10 @@ func (s *Service) buildUserProfiles(base kafkacontracts.VPNNodeUserProfile, serv
 
 	add(base)
 
-	if endpoint, ok := selectCDNForServer(cdnEndpoints, serverKey); ok {
-		cdnInbound := endpoint.InboundTag
-		if cdnInbound == "" {
-			cdnInbound = "vless-xhttp-cdn-in"
+	if !skipCDN {
+		if cdnProfile, ok := buildCDNProfile(base, serverKey, cdnEndpoints); ok {
+			add(cdnProfile)
 		}
-		cdnProfile := base
-		cdnProfile.InboundTag = cdnInbound
-		cdnProfile.Optional = true
-		add(cdnProfile)
 	}
 
 	// gRPC: регистрируем того же пользователя в gRPC-inbound, чтобы gRPC-ссылка из
@@ -300,7 +333,21 @@ func (s *Service) publishSyncCommands(ctx context.Context, tx pgx.Tx, access *Ac
 	cdnEndpoints := s.loadCDNEndpoints(ctx)
 	grpcEndpoints := s.loadGRPCEndpoints(ctx)
 
+	// Узлы, где CDN-квота пользователя исчерпана: их CDN-профиль в желаемое
+	// состояние не попадает, поэтому reconcile не возвращает отключённый доступ.
+	// Ошибка чтения не должна ронять выдачу основного доступа — тогда просто
+	// работаем как раньше (fail-open по КВОТЕ, не по доступу).
+	exhausted := map[string]struct{}{}
+	if s.cfg.CDNQuota.Enabled && s.cfg.CDNQuota.Enforce {
+		if got, err := s.repo.ExhaustedNodesForUser(ctx, access.TelegramID); err == nil {
+			exhausted = got
+		} else {
+			slog.Warn("cdn quota: read exhausted nodes failed", "telegram_id", access.TelegramID, "err", err)
+		}
+	}
+
 	for nodeID, nodeItems := range byNode {
+		_, skipCDN := exhausted[nodeID]
 		profiles := make([]kafkacontracts.VPNNodeUserProfile, 0, len(nodeItems)*2)
 		for _, item := range nodeItems {
 			base := kafkacontracts.VPNNodeUserProfile{
@@ -315,7 +362,7 @@ func (s *Service) publishSyncCommands(ctx context.Context, tx pgx.Tx, access *Ac
 				Level:       item.PoolItem.Level,
 				AccessUntil: access.AccessUntil,
 			}
-			profiles = append(profiles, s.buildUserProfiles(base, item.PoolItem.ServerKey, cdnEndpoints, grpcEndpoints)...)
+			profiles = append(profiles, s.buildUserProfiles(base, item.PoolItem.ServerKey, cdnEndpoints, grpcEndpoints, skipCDN)...)
 		}
 
 		cmd := kafkacontracts.NodeSyncUserCommand{
@@ -377,7 +424,9 @@ func (s *Service) publishRevokeCommands(ctx context.Context, tx pgx.Tx, telegram
 				Email:      cred.Email,
 				VLESSUUID:  cred.VLESSUUID,
 			}
-			profiles = append(profiles, s.buildUserProfiles(base, cred.ServerKey, revokeCDNEndpoints, revokeGRPCEndpoints)...)
+			// Отзыв: CDN-профиль включаем всегда (skipCDN=false) — иначе на узле
+			// осталась бы активная CDN-учётка отозванного пользователя.
+			profiles = append(profiles, s.buildUserProfiles(base, cred.ServerKey, revokeCDNEndpoints, revokeGRPCEndpoints, false)...)
 		}
 
 		cmd := kafkacontracts.NodeRevokeUserCommand{
@@ -423,6 +472,11 @@ func (s *Service) ApplyActivated(ctx context.Context, tx pgx.Tx, event *kafkacon
 	}
 	access := &AccessState{TelegramID: event.TelegramID, Status: "active", AccessUntil: &event.ActiveUntil, AccessRev: event.AccessRev, CountryCode: event.Country}
 	if err := s.repo.UpsertAccessProjectionTx(ctx, tx, access, string(event.Type), event.ActivatedAt); err != nil {
+		return err
+	}
+	// Сброс CDN-квоты выполняется ДО пересборки desired state: иначе ниже по
+	// коду мы бы прочитали ещё исчерпанное состояние и не вернули CDN-профиль.
+	if err := s.resetCDNQuotaOnPayment(ctx, tx, event.TelegramID, event.PaymentID, event.ActivatedAt); err != nil {
 		return err
 	}
 	_, err := s.ensureUserCredentialsAndSyncTx(ctx, tx, access)
@@ -506,15 +560,58 @@ func (s *Service) ApplyNodeTraffic(ctx context.Context, tx pgx.Tx, event *kafkac
 	// Суммарный кумулятивный трафик узла (для Prometheus-метрики / дашборда).
 	var totalUplink, totalDownlink int64
 
+	// Агрегаты одного отчёта: общий трафик и отдельно CDN-трафик по каждому
+	// пользователю. Считаются в памяти по одному событию, в БД уходят готовыми.
+	perUser := make(map[int64][2]int64, len(event.Items))
+	cdnPerUser := make(map[int64]int64, len(event.Items))
+
+	// Allowlist CDN-инбаундов строится из серверной конфигурации эндпоинтов.
+	// Никаких догадок по имени: тега нет в списке — трафик не CDN.
+	var cdnInbounds map[string]struct{}
+	if s.cfg.CDNQuota.Enabled {
+		cdnInbounds = cdnInboundAllowlist(s.loadCDNEndpoints(ctx))
+	}
+
 	for _, item := range event.Items {
 		if item.TelegramID == 0 {
 			continue
 		}
-		if err := s.repo.UpsertUserNodeTrafficTx(ctx, tx, item.TelegramID, nodeID, item.Uplink, item.Downlink); err != nil {
-			return err
+		perUser[item.TelegramID] = [2]int64{
+			perUser[item.TelegramID][0] + item.Uplink,
+			perUser[item.TelegramID][1] + item.Downlink,
 		}
 		totalUplink += item.Uplink
 		totalDownlink += item.Downlink
+
+		// Классификация строго по inbound_tag учётки, сверенному с серверным
+		// allowlist'ом. Пустой тег (агент старой версии либо учётка, общая
+		// для нескольких инбаундов) и любой тег вне списка — трафик
+		// неклассифицирован: в квоту он не идёт.
+		if len(cdnInbounds) > 0 {
+			if item.InboundTag == "" {
+				// Ожидаемо ненулевая величина: основной и gRPC-профили делят
+				// один email, поэтому агент осознанно не проставляет им тег.
+				// Алертить надо на РЕЗКИЙ РОСТ относительно базовой линии, а
+				// не на любое ненулевое значение.
+				commonmetrics.CDNQuotaUnclassifiedTotal.WithLabelValues(nodeID).Inc()
+			} else if _, isCDN := cdnInbounds[item.InboundTag]; isCDN {
+				cdnPerUser[item.TelegramID] += item.Uplink + item.Downlink
+			}
+		}
+	}
+
+	// Общий трафик пишем ОДНОЙ строкой на пользователя: у него теперь несколько
+	// учёток на узле (основная + CDN), и раньше вторая строка затирала первую
+	// через GREATEST вместо того, чтобы сложиться. Сумма монотонных счётчиков
+	// монотонна, поэтому GREATEST в апсерте продолжает защищать от повторов.
+	for telegramID, tr := range perUser {
+		if err := s.repo.UpsertUserNodeTrafficTx(ctx, tx, telegramID, nodeID, tr[0], tr[1]); err != nil {
+			return err
+		}
+	}
+
+	if err := s.applyCDNQuota(ctx, tx, nodeID, event.ServerKey, cdnPerUser, event.CreatedAt); err != nil {
+		return err
 	}
 
 	// Выставляем метрику трафика по узлу. Лейбл service Prometheus добавит сам
@@ -528,6 +625,148 @@ func (s *Service) ApplyNodeTraffic(ctx context.Context, tx pgx.Tx, event *kafkac
 	commonmetrics.NodeTrafficBytes.WithLabelValues(serverKey, serverKey, "uplink").Set(float64(totalUplink))
 	commonmetrics.NodeTrafficBytes.WithLabelValues(serverKey, serverKey, "downlink").Set(float64(totalDownlink))
 
+	return nil
+}
+
+// applyCDNQuota применяет наблюдения CDN-трафика к квотам узла и, если квота
+// исчерпана и включено принуждение, снимает ТОЛЬКО CDN-учётку пользователя на
+// этом узле. Основной и прочие транспорты не затрагиваются.
+func (s *Service) applyCDNQuota(
+	ctx context.Context,
+	tx pgx.Tx,
+	nodeID, serverKey string,
+	cdnPerUser map[int64]int64,
+	at time.Time,
+) error {
+	if !s.cfg.CDNQuota.Enabled || len(cdnPerUser) == 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	periodKey := calendarPeriodKey(at)
+
+	for telegramID, observed := range cdnPerUser {
+		state, err := s.repo.ApplyObservationTx(ctx, tx, telegramID, nodeID, observed,
+			s.cfg.CDNQuota.LimitBytes, periodKey, at)
+		if err != nil {
+			return err
+		}
+		if state.CounterRebased {
+			commonmetrics.CDNQuotaCounterResetsTotal.WithLabelValues(nodeID).Inc()
+			slog.Warn("cdn quota: node counter rolled back, row rebased",
+				"telegram_id", telegramID, "node_id", nodeID, "observed", observed)
+		}
+
+		if !state.JustExhausted {
+			continue
+		}
+
+		commonmetrics.CDNQuotaExhaustedTotal.WithLabelValues(nodeID).Inc()
+		// Overshoot — насколько потребление перевалило за лимит к моменту
+		// обнаружения. Величина ограничена частотой сбора и скоростью канала;
+		// нулевого превышения при периодической телеметрии не бывает.
+		if over := state.UsedBytes - state.LimitBytes; over > 0 {
+			commonmetrics.CDNQuotaOvershootBytes.WithLabelValues(nodeID).Observe(float64(over))
+		}
+		slog.Info("cdn quota exhausted",
+			"telegram_id", telegramID, "node_id", nodeID,
+			"used_bytes", state.UsedBytes, "limit_bytes", state.LimitBytes,
+			"period", state.PeriodKey, "revision", state.Revision)
+
+		if !s.cfg.CDNQuota.Enforce {
+			continue // shadow mode: считаем и наблюдаем, доступ не трогаем
+		}
+		if err := s.publishCDNRevoke(ctx, tx, telegramID, nodeID, serverKey, "cdn_quota_exhausted"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// publishCDNRevoke шлёт узлу команду снять РОВНО CDN-учётку пользователя.
+// Scope=listed_profiles обязателен: без него агент отзывает пользователя с узла
+// целиком и вместе с CDN унёс бы оплаченный основной доступ.
+func (s *Service) publishCDNRevoke(ctx context.Context, tx pgx.Tx, telegramID int64, nodeID, serverKey, reason string) error {
+	creds, err := s.repo.ListEnabledCredentialsForNodeTx(ctx, tx, telegramID, nodeID)
+	if err != nil {
+		return err
+	}
+	if len(creds) == 0 {
+		return nil
+	}
+	cdnEndpoints := s.loadCDNEndpoints(ctx)
+
+	profiles := make([]kafkacontracts.VPNNodeUserProfile, 0, len(creds))
+	maxRev := int64(0)
+	for _, cred := range creds {
+		if cred.AccessRev > maxRev {
+			maxRev = cred.AccessRev
+		}
+		base := kafkacontracts.VPNNodeUserProfile{
+			ItemKey:    cred.ItemKey,
+			InboundTag: cred.InboundTag,
+			Email:      cred.Email,
+			VLESSUUID:  cred.VLESSUUID,
+		}
+		if cdnProfile, ok := buildCDNProfile(base, cred.ServerKey, cdnEndpoints); ok {
+			profiles = append(profiles, cdnProfile)
+		}
+	}
+	if len(profiles) == 0 {
+		return nil
+	}
+
+	cmd := kafkacontracts.NodeRevokeUserCommand{
+		Type:       kafkacontracts.VPNCommandNodeRevokeUser,
+		CommandID:  uuid.NewString(),
+		NodeID:     nodeID,
+		ServerKey:  serverKey,
+		TelegramID: telegramID,
+		AccessRev:  maxRev,
+		Reason:     reason,
+		Scope:      kafkacontracts.RevokeScopeListedProfiles,
+		Profiles:   profiles,
+		CreatedAt:  time.Now().UTC(),
+	}
+	return outbox.AddTx(ctx, tx, outbox.Event{
+		AggregateType: "vpn-command",
+		AggregateID:   nodeID,
+		Topic:         commonkafka.TopicVPNCommands,
+		MessageKey:    nodeID,
+		EventType:     string(cmd.Type),
+		Payload:       &cmd,
+	})
+}
+
+// resetCDNQuotaOnPayment открывает новый период квоты на всех узлах пользователя
+// после подтверждённой оплаты или продления.
+//
+// Идемпотентность: ключ периода детерминирован от payment_id, повторное событие
+// с тем же идентификатором ничего не сбрасывает. Пробный период, pending и
+// неуспешный платёж сюда не доходят — обработчик вызывается только из
+// ApplyActivated, то есть по подтверждённому событию платёжного контура.
+func (s *Service) resetCDNQuotaOnPayment(ctx context.Context, tx pgx.Tx, telegramID int64, paymentID string, at time.Time) error {
+	if !s.cfg.CDNQuota.Enabled {
+		return nil
+	}
+	periodKey := paymentPeriodKey(paymentID)
+	if periodKey == "" {
+		return nil // активация без payment_id (реферальная награда) период не открывает
+	}
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	nodes, err := s.repo.ResetQuotaForUserTx(ctx, tx, telegramID, periodKey, s.cfg.CDNQuota.LimitBytes, at)
+	if err != nil {
+		return err
+	}
+	for _, nodeID := range nodes {
+		commonmetrics.CDNQuotaResetTotal.WithLabelValues(nodeID, "payment").Inc()
+	}
+	if len(nodes) > 0 {
+		slog.Info("cdn quota reset by payment", "telegram_id", telegramID, "nodes", len(nodes), "period", periodKey)
+	}
 	return nil
 }
 

@@ -180,22 +180,29 @@ func (s *Service) HandleStartTrial(ctx context.Context, cmd *kafkacontracts.Star
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	state, activated, err := s.repo.StartTrialTx(ctx, tx, cmd.TelegramID, s.defaultCountry, s.trialDays)
+	// Единственный подтверждённый результат доменной операции. Все ветки ниже
+	// строятся из него, а не из повторного чтения БД: между начислением и
+	// отправкой сообщения состояние могло измениться, и повторное чтение
+	// сказало бы пользователю неправду.
+	res, err := s.repo.StartTrialTx(ctx, tx, cmd.TelegramID, s.defaultCountry, s.trialDays)
 	if err != nil {
 		return err
 	}
+	state := res.State
 
-	if !activated {
-		if state.Status == StatusTrial || state.Status == StatusActive || state.Status == StatusGrace {
-			if err := s.sendStatusNotificationTx(ctx, tx, state); err != nil {
-				return err
-			}
-			return tx.Commit(ctx)
+	switch res.Outcome {
+	case TrialAlreadyUsed:
+		if err := s.notifyTrialAlreadyUsedTx(ctx, tx, state); err != nil {
+			return err
 		}
+		return tx.Commit(ctx)
+
+	case TrialDeferredGrace:
 		if err := s.notifyTx(ctx, tx, kafkacontracts.TgNotification{
 			TelegramID: cmd.TelegramID,
-			Message:    "Похоже, ты уже использовал пробный период ранее.\n\nТеперь доступ можно получить только через платную подписку 👇",
-			Keyboard:   kafkacontracts.TgKeyboardTrialOrBuy,
+			Message: "Подписка сейчас в льготном периоде: последнее автопродление не прошло.\n\n" +
+				"Пробный период не сгорел — активируйте его после того, как оплата пройдёт.",
+			Keyboard: kafkacontracts.TgKeyboardBuyMenu,
 		}); err != nil {
 			return err
 		}
@@ -215,15 +222,38 @@ func (s *Service) HandleStartTrial(ctx context.Context, cmd *kafkacontracts.Star
 		}
 	}
 
+	var message string
+	if res.Outcome == TrialGrantedOnTopOfPaid {
+		// Триал поверх действующей оплаты: показываем ЕДИНЫЙ общий остаток,
+		// а не два срока по отдельности — у пользователя один непрерывный доступ.
+		message = fmt.Sprintf(
+			"✨ Пробные дни активированы и добавлены к вашей действующей подписке.\n"+
+				"Начислено: *%s*.\n"+
+				"Доступ действует до: *%s*\n"+
+				"Всего осталось: *%s*.\n\n"+
+				"Все доступные локации уже находятся в вашей персональной ссылке.\n\n"+
+				"Сейчас пришлю ссылку доступа для настройки приложения.",
+			pluralDays(res.TrialDays),
+			state.ExpiresAt.Format("02.01.2006"),
+			pluralDays(state.DaysLeft),
+		)
+	} else {
+		message = fmt.Sprintf(
+			"✨ Пробный период на *%s* активирован!\n"+
+				"Действует до: *%s*.\n\n"+
+				"Все доступные локации уже находятся в вашей персональной ссылке.\n"+
+				"Доступность профилей может меняться по техническим причинам.\n\n"+
+				"Сейчас пришлю ссылку доступа для настройки приложения.",
+			pluralDays(res.TrialDays),
+			state.ExpiresAt.Format("02.01.2006"),
+		)
+	}
+
 	if err := s.notifyTx(ctx, tx, kafkacontracts.TgNotification{
 		TelegramID: cmd.TelegramID,
 		ParseMode:  "Markdown",
-		Message: fmt.Sprintf(
-			"✨ Пробный период на *%d дн.* активирован!\nПрофиль подключения по умолчанию: 🇱🇹 Литва\nДоступность профилей может меняться по техническим причинам.\nДействует до: *%s*.\n\nСейчас пришлю ссылку доступа для настройки приложения.",
-			s.trialDays,
-			state.ExpiresAt.Format("02.01.2006"),
-		),
-		Keyboard: kafkacontracts.TgKeyboardMySubscriptionConfig,
+		Message:    message,
+		Keyboard:   kafkacontracts.TgKeyboardMySubscriptionConfig,
 	}); err != nil {
 		return err
 	}
@@ -232,6 +262,81 @@ func (s *Service) HandleStartTrial(ctx context.Context, cmd *kafkacontracts.Star
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// notifyTrialAlreadyUsedTx отвечает на повторный запрос триала. Ветка зависит от
+// того, есть ли у пользователя действующий доступ прямо сейчас: сообщение
+// «триал уже использован, купите подписку» человеку с активной оплатой выглядит
+// как сбой сервиса.
+func (s *Service) notifyTrialAlreadyUsedTx(ctx context.Context, tx pgx.Tx, state *SubscriptionState) error {
+	if state == nil {
+		return nil
+	}
+
+	switch state.Status {
+	case StatusTrial:
+		return s.notifyTx(ctx, tx, kafkacontracts.TgNotification{
+			TelegramID: state.TelegramID,
+			ParseMode:  "Markdown",
+			Message: fmt.Sprintf(
+				"✨ Пробный период уже активирован и действует.\n"+
+					"Действует до: *%s*\n"+
+					"Осталось: *%s*.\n\n"+
+					"Все доступные локации уже находятся в вашей персональной ссылке.\n\n"+
+					"Нажмите «🔗 Получить ссылку доступа», чтобы получить ссылку для настройки приложения.",
+				state.ExpiresAt.Format("02.01.2006"),
+				pluralDays(state.DaysLeft),
+			),
+			Keyboard: kafkacontracts.TgKeyboardMySubscriptionConfig,
+		})
+
+	case StatusActive:
+		return s.notifyTx(ctx, tx, kafkacontracts.TgNotification{
+			TelegramID: state.TelegramID,
+			ParseMode:  "Markdown",
+			Message: fmt.Sprintf(
+				"✅ У вас действующая платная подписка, а пробный период уже был активирован ранее.\n"+
+					"Дополнительные пробные дни не начисляются.\n"+
+					"Доступ действует до: *%s*\n"+
+					"Всего осталось: *%s*.\n\n"+
+					"Все доступные локации уже находятся в вашей персональной ссылке.\n\n"+
+					"Нажмите «🔗 Получить ссылку доступа», чтобы получить ссылку для настройки приложения.",
+				state.ExpiresAt.Format("02.01.2006"),
+				pluralDays(state.DaysLeft),
+			),
+			Keyboard: kafkacontracts.TgKeyboardMySubscriptionConfig,
+		})
+
+	case StatusGrace:
+		return s.sendStatusNotificationTx(ctx, tx, state)
+	}
+
+	// Триал был и уже истёк, действующей подписки нет — текущее поведение
+	// проекта сохраняется без изменения смысла.
+	return s.notifyTx(ctx, tx, kafkacontracts.TgNotification{
+		TelegramID: state.TelegramID,
+		Message:    "Похоже, ты уже использовал пробный период ранее.\n\nТеперь доступ можно получить только через платную подписку 👇",
+		Keyboard:   kafkacontracts.TgKeyboardTrialOrBuy,
+	})
+}
+
+// pluralDays склоняет «день/дня/дней». Отдельная функция, потому что склонение
+// нужно в нескольких ветках, а «3 дн.» в сообщении о продлении выглядит как
+// обрубок. Значение оборачивается в Markdown-жирный вызывающим кодом.
+func pluralDays(n int) string {
+	if n < 0 {
+		n = 0
+	}
+	word := "дней"
+	switch {
+	case n%100 >= 11 && n%100 <= 14:
+		word = "дней"
+	case n%10 == 1:
+		word = "день"
+	case n%10 >= 2 && n%10 <= 4:
+		word = "дня"
+	}
+	return fmt.Sprintf("%d %s", n, word)
 }
 
 func (s *Service) HandleGetStatus(ctx context.Context, cmd *kafkacontracts.GetStatusCommand) error {
@@ -417,10 +522,10 @@ func (s *Service) HandleBillingPaymentSucceeded(ctx context.Context, event *kafk
 		TelegramID: event.TelegramID,
 		ParseMode:  "Markdown",
 		Message: fmt.Sprintf(
-			"%s\nПодписка активна до *%s*.\nОсталось дней: *%d*.\n\nСейчас пришлю ссылку доступа для настройки приложения.",
+			"%s\nПодписка активна до *%s*.\nОсталось: *%s*.\n\nВсе доступные локации уже находятся в вашей персональной ссылке.\n\nСейчас пришлю ссылку доступа для настройки приложения.",
 			messagePrefix,
 			state.ExpiresAt.Format("02.01.2006"),
-			state.DaysLeft,
+			pluralDays(state.DaysLeft),
 		),
 		Keyboard: kafkacontracts.TgKeyboardMySubscriptionConfig,
 	}); err != nil {
@@ -581,7 +686,7 @@ func (s *Service) sendStatusNotificationTx(ctx context.Context, tx pgx.Tx, state
 			TelegramID: state.TelegramID,
 			Message: "Пока у тебя нет активной подписки.\n\n" +
 				"Ты можешь:\n" +
-				fmt.Sprintf("• оформить пробный период на %d дн.,\n", s.trialDays) +
+				fmt.Sprintf("• оформить пробный период на %s,\n", pluralDays(s.trialDays)) +
 				"• или купить подписку.\n\n" +
 				"Выбирай 👇",
 			Keyboard: kafkacontracts.TgKeyboardTrialOrBuy,
@@ -592,9 +697,9 @@ func (s *Service) sendStatusNotificationTx(ctx context.Context, tx pgx.Tx, state
 			TelegramID: state.TelegramID,
 			ParseMode:  "Markdown",
 			Message: fmt.Sprintf(
-				"✨ У тебя активен пробный период.\nПрофиль подключения по умолчанию: 🇱🇹 Литва\nДоступность профилей может меняться по техническим причинам.\nДействует до: *%s*\nОсталось дней: *%d*.\n\nНажми «🔗 Получить ссылку доступа», чтобы получить ссылку для настройки приложения.",
+				"✨ У тебя активен пробный период.\nДействует до: *%s*\nОсталось: *%s*.\n\nВсе доступные локации уже находятся в вашей персональной ссылке.\nДоступность профилей может меняться по техническим причинам.\n\nНажми «🔗 Получить ссылку доступа», чтобы получить ссылку для настройки приложения.",
 				state.ExpiresAt.Format("02.01.2006"),
-				state.DaysLeft,
+				pluralDays(state.DaysLeft),
 			),
 			Keyboard: kafkacontracts.TgKeyboardMySubscriptionConfig,
 		})
@@ -608,9 +713,9 @@ func (s *Service) sendStatusNotificationTx(ctx context.Context, tx pgx.Tx, state
 			TelegramID: state.TelegramID,
 			ParseMode:  "Markdown",
 			Message: fmt.Sprintf(
-				"✅ У тебя активная подписка.\nПрофиль подключения по умолчанию: 🇱🇹 Литва\nДоступность профилей может меняться по техническим причинам.\nДействует до: *%s*\nОсталось дней: *%d*.\n%s\n\nНажми «🔗 Получить ссылку доступа», чтобы получить ссылку для настройки приложения.",
+				"✅ У тебя активная подписка.\nДействует до: *%s*\nОсталось: *%s*.\n%s\n\nВсе доступные локации уже находятся в вашей персональной ссылке.\nДоступность профилей может меняться по техническим причинам.\n\nНажми «🔗 Получить ссылку доступа», чтобы получить ссылку для настройки приложения.",
 				state.ExpiresAt.Format("02.01.2006"),
-				state.DaysLeft,
+				pluralDays(state.DaysLeft),
 				postfix,
 			),
 			Keyboard: kafkacontracts.TgKeyboardMySubscriptionConfig,

@@ -1,15 +1,26 @@
 {
-  "version": 2,
+  "version": 3,
   "name": "House VPN RU",
   "dns": {
     "domestic_ip": "77.88.8.8",
     "domestic_doh": "https://77.88.8.8/dns-query",
-    "remote_ip": "8.8.8.8",
-    "remote_doh": "https://8.8.8.8/dns-query"
+    "remote_ip": "1.1.1.1",
+    "remote_doh": "https://1.1.1.1/dns-query"
   },
   "direct_domains": [
     "regexp:.*\\.ru$",
-    "regexp:.*\\.xn--p1ai$"
+    "regexp:.*\\.xn--p1ai$",
+    "regexp:.*\\.su$",
+    "domain:vk.com",
+    "domain:vk.me",
+    "domain:vk-cdn.net",
+    "domain:userapi.com",
+    "domain:vkuseraudio.net",
+    "domain:vkuservideo.net",
+    "domain:mycdn.me",
+    "domain:yandex.net",
+    "domain:yastatic.net",
+    "domain:ozonusercontent.com"
   ],
   "direct_ips": [
     "10.0.0.0/8",
@@ -26,9 +37,13 @@
   "proxy_ips": [],
   "block_domains": [],
   "geo_rules": {
-    "enabled": false,
-    "direct_sites": ["geosite:category-ru"],
-    "direct_ips": ["geoip:ru"],
+    "enabled": true,
+    "direct_sites": [
+      "geosite:category-ru"
+    ],
+    "direct_ips": [
+      "geoip:ru"
+    ],
     "geoip_url": "https://race-src.com/geo/geoip.dat",
     "geosite_url": "https://race-src.com/geo/geosite.dat"
   }

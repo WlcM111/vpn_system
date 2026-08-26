@@ -206,6 +206,67 @@ var (
 	// Лаг консьюмера: отставание (в сообщениях) группы от конца партиции.
 	// Выставляется сборщиком метрик через Kafka lag-запрос. Чем больше — тем
 	// сильнее обработка не успевает за входящим потоком.
+	// ── Квота CDN-трафика ────────────────────────────────────────────────
+	// Метки только по узлу: telegram_id в лейблах Prometheus запрещён из-за
+	// неконтролируемой кардинальности.
+	CDNQuotaUsedBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_cdn_quota_used_bytes",
+		Help: "Sum of CDN bytes consumed in the current quota period, by node.",
+	}, []string{"node_id"})
+
+	CDNQuotaRowsTotal = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_cdn_quota_rows",
+		Help: "Number of tracked CDN quota rows (user-node pairs), by node.",
+	}, []string{"node_id"})
+
+	CDNQuotaExhaustedRows = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_cdn_quota_exhausted_rows",
+		Help: "Number of CDN quota rows currently in the exhausted state, by node.",
+	}, []string{"node_id"})
+
+	// Строки, по которым давно не приходило отчётов: индикатор сбоя телеметрии.
+	CDNQuotaStaleRows = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_cdn_quota_stale_rows",
+		Help: "CDN quota rows with telemetry older than the configured threshold, by node.",
+	}, []string{"node_id"})
+
+	CDNQuotaExhaustedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "vpn_platform_cdn_quota_exhausted_total",
+		Help: "Transitions into the exhausted state, by node.",
+	}, []string{"node_id"})
+
+	CDNQuotaResetTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "vpn_platform_cdn_quota_reset_total",
+		Help: "CDN quota period resets, by node and trigger.",
+	}, []string{"node_id", "trigger"})
+
+	CDNQuotaResetErrorsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "vpn_platform_cdn_quota_reset_errors_total",
+		Help: "Failed CDN quota reset attempts, by trigger.",
+	}, []string{"trigger"})
+
+	// Превышение лимита к моменту обнаружения. Строгий hard cap при
+	// периодической телеметрии недостижим — величина измеряется, а не
+	// декларируется нулём.
+	CDNQuotaOvershootBytes = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "vpn_platform_cdn_quota_overshoot_bytes",
+		Help:    "Bytes consumed above the limit before enforcement kicked in.",
+		Buckets: prometheus.ExponentialBuckets(1_000_000, 4, 8),
+	}, []string{"node_id"})
+
+	// Счётчик Xray/агента откатился назад — строка перебазирована.
+	CDNQuotaCounterResetsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "vpn_platform_cdn_quota_counter_resets_total",
+		Help: "Observed rollbacks of node-side cumulative counters, by node.",
+	}, []string{"node_id"})
+
+	// Трафик, который невозможно отнести ни к CDN, ни к не-CDN (агент старой
+	// версии или учётка, общая для нескольких инбаундов). В квоту не попадает.
+	CDNQuotaUnclassifiedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "vpn_platform_cdn_quota_unclassified_total",
+		Help: "Traffic report items without a usable inbound tag, by node.",
+	}, []string{"node_id"})
+
 	KafkaConsumerLag = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "vpn_platform_kafka_consumer_lag",
 		Help: "Consumer group lag (messages behind log end offset) by topic and group.",
@@ -254,6 +315,10 @@ func init() {
 		NodeTrafficBps,
 		NodeOnlineUsers,
 		NodeBandwidthPercent, MetricsCollectorLastRun,
+		// Квота CDN-трафика
+		CDNQuotaUsedBytes, CDNQuotaRowsTotal, CDNQuotaExhaustedRows, CDNQuotaStaleRows,
+		CDNQuotaExhaustedTotal, CDNQuotaResetTotal, CDNQuotaResetErrorsTotal,
+		CDNQuotaOvershootBytes, CDNQuotaCounterResetsTotal, CDNQuotaUnclassifiedTotal,
 		// S12: метрики масштабируемости
 		KafkaConsumerLag, OutboxDepth, OutboxFailedTotal, PostgresLockWaits, PostgresConnectionsInUse,
 	)

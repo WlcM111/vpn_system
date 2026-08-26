@@ -58,6 +58,15 @@ func main() {
 
 	consumerWorkers := parseIntEnv("CONSUMER_WORKERS", 3)
 
+	// Политика CDN-квоты валидируется на старте: неоднозначная конфигурация
+	// должна давать понятную ошибку запуска, а не тихо работать не так.
+	cdnQuota, err := vpn_orchestrator.LoadCDNQuotaPolicyFromEnv()
+	if err != nil {
+		log.Fatalf("invalid CDN quota configuration: %v", err)
+	}
+	log.Printf("[vpn-orchestrator] cdn quota: enabled=%v enforce=%v limit=%d bytes fail_mode=%s",
+		cdnQuota.Enabled, cdnQuota.Enforce, cdnQuota.LimitBytes, cdnQuota.FailMode)
+
 	repo := vpn_orchestrator.NewRepository(pool)
 	svc := vpn_orchestrator.NewService(repo, producer, vpn_orchestrator.ServiceConfig{
 		FeedFormat:       strings.TrimSpace(os.Getenv("SUBSCRIPTION_FEED_FORMAT")),
@@ -65,6 +74,7 @@ func main() {
 		DefaultMaxUsers:  parseIntEnv("NODE_DEFAULT_MAX_USERS", 200),
 		DefaultWeight:    parseIntEnv("NODE_DEFAULT_WEIGHT", 100),
 		SoftOverflow:     parseBoolEnv("BALANCER_SOFT_OVERFLOW", true),
+		CDNQuota:         cdnQuota,
 	})
 
 	httpAddr := strings.TrimSpace(os.Getenv("VPN_ORCHESTRATOR_HTTP_ADDR"))
@@ -137,6 +147,15 @@ func main() {
 		brokers,
 	)
 	go metricsCollector.Run(ctx)
+
+	// Квота CDN: плановый календарный сброс периода и экспорт метрик.
+	// Проход сверяет ключ периода, поэтому пропуск полуночи из-за рестарта
+	// или деплоя не теряет сброс.
+	go svc.RunCDNQuotaWorker(
+		ctx,
+		parseDurationEnv("CDN_QUOTA_WORKER_INTERVAL", 5*time.Minute),
+		parseIntEnv("CDN_QUOTA_RESET_BATCH_SIZE", 500),
+	)
 
 	// S9/S11: периодическая чистка опубликованного outbox и старого inbox.
 	// Запускаем в оркестраторе (одного достаточно — таблицы общие).
