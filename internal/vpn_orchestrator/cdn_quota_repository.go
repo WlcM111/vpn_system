@@ -105,7 +105,7 @@ func (r *Repository) ApplyObservationTx(
 			baseline_bytes, observed_bytes, limit_bytes,
 			state, revision, last_report_at, created_at, updated_at
 		)
-		VALUES ($1, $2, $5, $7, $3, $3, $4, 'active', 0, $7, now(), now())
+		VALUES ($1, $2, $5, $6, $3, $3, $4, 'active', 0, $6, now(), now())
 		ON CONFLICT (telegram_id, node_id) DO UPDATE SET
 			-- Откат счётчика ниже базы = рестарт Xray или переустановка агента.
 			-- Перебазируемся так, чтобы уже начисленное потребление сохранилось.
@@ -120,7 +120,7 @@ func (r *Repository) ApplyObservationTx(
 				ELSE GREATEST(vpn_user_cdn_quota.observed_bytes, EXCLUDED.observed_bytes)
 			END,
 			limit_bytes = EXCLUDED.limit_bytes,
-			last_report_at = $7,
+			last_report_at = $6,
 			updated_at = now()
 		RETURNING
 			period_key,
@@ -134,7 +134,7 @@ func (r *Repository) ApplyObservationTx(
 		       ups.revision, ups.last_report_at,
 		       COALESCE($3::bigint < prev.prev_baseline, false) AS rebased
 		FROM ups LEFT JOIN prev ON true
-	`, telegramID, nodeID, observed, limitBytes, periodKey, nil, at.UTC()).
+	`, telegramID, nodeID, observed, limitBytes, periodKey, at.UTC()).
 		Scan(&st.PeriodKey, &st.UsedBytes, &st.LimitBytes, &prevState, &st.Revision, &lastReport, &rebased)
 	if err != nil {
 		return nil, fmt.Errorf("apply cdn observation tg=%d node=%s: %w", telegramID, nodeID, err)
