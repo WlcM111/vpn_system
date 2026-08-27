@@ -99,8 +99,15 @@ func TestPeriodKeys(t *testing.T) {
 		t.Errorf("пустой payment_id не должен открывать период, получено %q", got)
 	}
 	// Один и тот же платёж всегда даёт один ключ — период не создаётся дважды.
-	if paymentPeriodKey("abc") != paymentPeriodKey("abc") {
-		t.Fatal("ключ периода по payment_id недетерминирован")
+	// Значения сравниваются через переменные: два одинаковых вызова в одном
+	// выражении staticcheck справедливо считает тавтологией (SA4000).
+	first := paymentPeriodKey("abc")
+	second := paymentPeriodKey("abc")
+	if first != second {
+		t.Fatalf("ключ периода по payment_id недетерминирован: %q против %q", first, second)
+	}
+	if first != "pay:abc" {
+		t.Errorf("ключ периода = %q, ожидалось \"pay:abc\"", first)
 	}
 }
 
