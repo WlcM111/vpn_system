@@ -34,9 +34,19 @@ var (
 		Help: "HTTP requests by route, method and status.",
 	}, []string{"route", "method", "status"})
 
+	// SubscriptionActivationsTotal считает ФАКТИЧЕСКИЕ активации подписки, а не
+	// ответы платёжного провайдера. BillingPaymentsTotal увеличивается в
+	// billing-service до публикации события и до изменения подписки, поэтому по
+	// нему нельзя судить, получил ли пользователь доступ. Метки: source —
+	// initial или recurring, result — applied или duplicate.
+	SubscriptionActivationsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "vpn_platform_subscription_activations_total",
+		Help: "Subscription activations actually applied to the database.",
+	}, []string{"source", "result"})
+
 	BillingPaymentsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "vpn_platform_billing_payments_total",
-		Help: "Billing payment outcomes.",
+		Help: "Billing payment outcomes as reported by the provider, before activation.",
 	}, []string{"outcome"})
 
 	KafkaHandlerDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
@@ -303,6 +313,7 @@ func init() {
 	prometheus.MustRegister(
 		// технические
 		KafkaConsumedTotal, KafkaPublishedTotal, HTTPRequestsTotal, BillingPaymentsTotal, KafkaHandlerDuration,
+		SubscriptionActivationsTotal,
 		// бизнес-метрики
 		SubscriptionsByStatus,
 		SubscriptionsByLifecycle,

@@ -165,7 +165,63 @@ func RunConsumerWithDLT(ctx context.Context, reader *kafkago.Reader, serviceName
 				continue
 			}
 
-			time.Sleep(time.Duration(minInt(attemptCount, 10)) * 500 * time.Millisecond)
+			// Повтор ТОГО ЖЕ сообщения на месте.
+			//
+			// Раньше здесь была пауза и continue. Это возвращало управление к
+			// FetchMessage, который отдаёт СЛЕДУЮЩЕЕ сообщение, а не текущее:
+			// упавшее сообщение молча пропускалось, offset не коммитился, и
+			// повторная обработка наступала только после рестарта сервиса или
+			// ребаланса группы. Для billing.events это означало потерю
+			// подтверждённого платежа: деньги списаны, подписка не выдана.
+			//
+			// Теперь сообщение повторяется в цикле до успеха или до порога DLT.
+			// Порядок в партиции сохраняется, потому что мы не идём дальше, пока
+			// текущее сообщение не обработано.
+			for err != nil && attemptCount < 20 {
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-time.After(time.Duration(minInt(attemptCount, 10)) * 500 * time.Millisecond):
+				}
+
+				err = handle(ctx, msg)
+				if err == nil {
+					break
+				}
+				if errors.Is(err, ErrSkip) {
+					break
+				}
+				attemptCount = attemptStore.Inc(ctx, attemptKey)
+				slog.Error("kafka message retry failed",
+					"service", serviceName,
+					"topic", msg.Topic,
+					"partition", msg.Partition,
+					"offset", msg.Offset,
+					"key", string(msg.Key),
+					"attempt", attemptCount,
+					"err", err,
+				)
+			}
+
+			if err != nil {
+				// Ретраи исчерпаны либо handler попросил пропустить сообщение.
+				if dltProducer != nil && dltTopic != "" {
+					commonmetrics.KafkaConsumedTotal.WithLabelValues(msg.Topic, "dlt").Inc()
+					_ = publishDLT(ctx, dltProducer, dltTopic, msg, serviceName, err)
+				}
+				attemptStore.Reset(ctx, attemptKey)
+				if commitErr := reader.CommitMessages(ctx, msg); commitErr != nil {
+					return commitErr
+				}
+				continue
+			}
+
+			// Ретрай удался — фиксируем как обычную успешную обработку.
+			attemptStore.Reset(ctx, attemptKey)
+			commonmetrics.KafkaConsumedTotal.WithLabelValues(msg.Topic, "ok").Inc()
+			if commitErr := reader.CommitMessages(ctx, msg); commitErr != nil {
+				return commitErr
+			}
 			continue
 		}
 

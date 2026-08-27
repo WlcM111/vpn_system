@@ -174,18 +174,26 @@ func processSubscriptionMessageOnce(
 		messageID = msg.Topic + ":" + string(msg.Key) + ":" + fmt.Sprint(msg.Partition) + ":" + fmt.Sprint(msg.Offset)
 	}
 
-	tx, err := svc.repo.pool.Begin(ctx)
+	// Дедуп берём в отдельной короткой транзакции и коммитим её ТОЛЬКО после
+	// того, как бизнес-обработчик завершился успешно.
+	//
+	// Обработчик открывает собственную транзакцию (см. HandleBillingPaymentSucceeded).
+	// Свести их в одну означало бы менять сигнатуры всех Handle*-методов, поэтому
+	// порядок такой: сначала резервируем ключ дедупа, затем выполняем работу,
+	// затем фиксируем резерв. Если работа упала — резерв откатывается по defer,
+	// и повторная доставка обработает сообщение заново, а не пропустит молча.
+	dedupTx, err := svc.repo.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = dedupTx.Rollback(ctx) }()
 
-	inserted, err := outbox.MarkProcessed(ctx, tx, "user-subscription-service", messageID, eventType)
+	inserted, err := outbox.MarkProcessed(ctx, dedupTx, "user-subscription-service", messageID, eventType)
 	if err != nil {
 		return err
 	}
 	if !inserted {
-		return tx.Commit(ctx)
+		return dedupTx.Commit(ctx)
 	}
 
 	opCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -195,5 +203,5 @@ func processSubscriptionMessageOnce(
 		return err
 	}
 
-	return tx.Commit(ctx)
+	return dedupTx.Commit(ctx)
 }

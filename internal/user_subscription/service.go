@@ -10,6 +10,7 @@ import (
 	"time"
 
 	commonkafka "vpn-platform/internal/common/kafka"
+	commonmetrics "vpn-platform/internal/common/metrics"
 	"vpn-platform/internal/common/outbox"
 	kafkacontracts "vpn-platform/internal/contracts/kafka"
 
@@ -472,10 +473,17 @@ func (s *Service) HandleBillingPaymentSucceeded(ctx context.Context, event *kafk
 		return err
 	}
 
+	activationSource := "initial"
+	if event.ChargeSource == kafkacontracts.BillingChargeSourceRecurring {
+		activationSource = "recurring"
+	}
+
 	if !applied {
+		commonmetrics.SubscriptionActivationsTotal.WithLabelValues(activationSource, "duplicate").Inc()
 		slog.Info("user-subscription duplicate payment ignored", "telegram_id", event.TelegramID, "payment_id", event.PaymentID)
 		return tx.Commit(ctx)
 	}
+	commonmetrics.SubscriptionActivationsTotal.WithLabelValues(activationSource, "applied").Inc()
 
 	// Реферальная атрибуция: если пользователь был приглашён и это его ПЕРВАЯ платная
 	// активация (applied=true), засчитываем конверсию рефереру в той же транзакции —
