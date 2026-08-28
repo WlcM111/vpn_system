@@ -414,7 +414,15 @@ func (r *Repository) ActivatePaidTx(ctx context.Context, tx pgx.Tx, telegramID i
 				telegram_id, source, business_key, duration_days,
 				effective_from, effective_until, granted_at
 			)
-			VALUES ($1, 'paid', $2, $3, $4, $4 + make_interval(days => $3), $4)
+			VALUES (
+				$1::bigint,
+				'paid',
+				$2::text,
+				$3::int,
+				$4::timestamptz,
+				$4::timestamptz + make_interval(days => $3::int),
+				$4::timestamptz
+			)
 			ON CONFLICT (telegram_id, source, business_key) DO NOTHING
 		`, telegramID, paymentID, durationDays, now)
 		if gErr != nil {
