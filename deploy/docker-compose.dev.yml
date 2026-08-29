@@ -395,10 +395,18 @@ services:
     depends_on:
       - vpn-orchestrator-service
 
-  alertmanager:
+    alertmanager:
     image: prom/alertmanager:v0.27.0
     container_name: vpn-platform-alertmanager
     restart: unless-stopped
+    environment:
+      # С центрального сервера api.telegram.org недоступен напрямую,
+      # поэтому уведомления идут через тот же исходящий прокси, что и
+      # основной бот. Значение берётся из TG_HTTPS_PROXY в .env.
+      HTTPS_PROXY: ${TG_HTTPS_PROXY:-}
+      HTTP_PROXY: ${TG_HTTPS_PROXY:-}
+      # Внутренние адреса ходят напрямую, минуя прокси.
+      NO_PROXY: localhost,127.0.0.1,vpn-platform-prometheus,prometheus,vpn-platform-alertmanager
     volumes:
       - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager_data:/alertmanager

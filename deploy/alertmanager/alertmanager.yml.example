@@ -31,6 +31,10 @@ receivers:
       # chat_id — число без кавычек.
       - bot_token: PASTE_TELEGRAM_BOT_TOKEN
         chat_id: 0
+        # Разрешаем брать адрес прокси из HTTPS_PROXY контейнера: с центра
+        # api.telegram.org напрямую недоступен.
+        http_config:
+          proxy_from_environment: true
         parse_mode: HTML
         send_resolved: true
         message: |
