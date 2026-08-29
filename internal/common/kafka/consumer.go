@@ -156,8 +156,24 @@ func RunConsumerWithDLT(ctx context.Context, reader *kafkago.Reader, serviceName
 			)
 
 			if attemptCount >= 20 && dltProducer != nil && dltTopic != "" {
+				if dltErr := publishDLT(ctx, dltProducer, dltTopic, msg, serviceName, err); dltErr != nil {
+					slog.Error("failed to publish message to DLT, keeping offset uncommitted",
+						"service", serviceName,
+						"topic", msg.Topic,
+						"partition", msg.Partition,
+						"offset", msg.Offset,
+						"key", string(msg.Key),
+						"dlt_topic", dltTopic,
+						"err", dltErr,
+					)
+					select {
+					case <-ctx.Done():
+						return nil
+					case <-time.After(5 * time.Second):
+					}
+					continue
+				}
 				commonmetrics.KafkaConsumedTotal.WithLabelValues(msg.Topic, "dlt").Inc()
-				_ = publishDLT(ctx, dltProducer, dltTopic, msg, serviceName, err)
 				attemptStore.Reset(ctx, attemptKey)
 				if commitErr := reader.CommitMessages(ctx, msg); commitErr != nil {
 					return commitErr
@@ -205,9 +221,32 @@ func RunConsumerWithDLT(ctx context.Context, reader *kafkago.Reader, serviceName
 
 			if err != nil {
 				// Ретраи исчерпаны либо handler попросил пропустить сообщение.
+				//
+				// Коммитим ТОЛЬКО если сообщение реально легло в DLT. Раньше
+				// ошибка публикации проглатывалась через `_ =`, а коммит шёл
+				// в любом случае: сообщение исчезало бесследно, ни в топике,
+				// ни в DLT. Для billing.events это означало потерю
+				// подтверждённого платежа — деньги списаны, подписка не выдана,
+				// и следа не осталось нигде.
 				if dltProducer != nil && dltTopic != "" {
+					if dltErr := publishDLT(ctx, dltProducer, dltTopic, msg, serviceName, err); dltErr != nil {
+						slog.Error("failed to publish message to DLT, keeping offset uncommitted",
+							"service", serviceName,
+							"topic", msg.Topic,
+							"partition", msg.Partition,
+							"offset", msg.Offset,
+							"key", string(msg.Key),
+							"dlt_topic", dltTopic,
+							"err", dltErr,
+						)
+						select {
+						case <-ctx.Done():
+							return nil
+						case <-time.After(5 * time.Second):
+						}
+						continue
+					}
 					commonmetrics.KafkaConsumedTotal.WithLabelValues(msg.Topic, "dlt").Inc()
-					_ = publishDLT(ctx, dltProducer, dltTopic, msg, serviceName, err)
 				}
 				attemptStore.Reset(ctx, attemptKey)
 				if commitErr := reader.CommitMessages(ctx, msg); commitErr != nil {

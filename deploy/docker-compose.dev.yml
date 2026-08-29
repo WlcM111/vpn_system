@@ -381,6 +381,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
       - prometheus_data:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
@@ -393,6 +394,21 @@ services:
       - "127.0.0.1:9091:9090"
     depends_on:
       - vpn-orchestrator-service
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: vpn-platform-alertmanager
+    restart: unless-stopped
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    expose:
+      - "9093"
+    ports:
+      - "127.0.0.1:9093:9093"
 
   grafana:
     image: grafana/grafana:11.3.1
@@ -416,6 +432,7 @@ services:
 
 volumes:
   prometheus_data:
+  alertmanager_data:
   grafana_data:
   postgres_data:
   redis_data:

@@ -1,5 +1,7 @@
 # secrets
+# secrets
 .env
+deploy/alertmanager/alertmanager.yml
 .env.local
 .env.*.local
 

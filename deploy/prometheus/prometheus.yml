@@ -5,6 +5,17 @@ global:
   external_labels:
     monitor: vpn-platform
 
+# Файлы с правилами алертов. Перечитываются при перезапуске Prometheus
+# или по POST /-/reload (включён флагом --web.enable-lifecycle).
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+# Куда отправлять сработавшие алерты.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["vpn-platform-alertmanager:9093"]
+
 scrape_configs:
   # Сам Prometheus (для контроля, что он жив)
   - job_name: prometheus
@@ -31,3 +42,8 @@ scrape_configs:
       - targets: ["vpn-platform-tg-bot-gateway:9090"]
         labels:
           service: tg-bot-gateway
+
+  # Alertmanager: контролируем, что он жив и доставляет уведомления.
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["vpn-platform-alertmanager:9093"]

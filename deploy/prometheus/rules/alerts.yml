@@ -1,0 +1,140 @@
+groups:
+  - name: money
+    interval: 30s
+    rules:
+      # Сообщение ушло в dead-letter — обработка провалилась 20 раз подряд.
+      # Для billing.events это подтверждённый платёж, который не превратился
+      # в подписку. Реагировать надо в течение минут, а не суток.
+      - alert: KafkaMessageInDLT
+        expr: increase(vpn_platform_kafka_consumed_total{status="dlt"}[10m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Сообщение ушло в DLT ({{ $labels.topic }})"
+          description: >-
+            Топик {{ $labels.topic }}: за 10 минут в dead-letter попало
+            {{ $value | printf "%.0f" }} сообщений. Если это billing.events —
+            платёж подтверждён, но подписка не выдана.
+            Смотреть: docker exec vpn-platform-kafka
+            /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server
+            localhost:9092 --topic {{ $labels.topic }}.dlt --from-beginning
+            --max-messages 5 --timeout-ms 10000
+
+      # Платёж принят провайдером, но подписка не активирована. Оба счётчика
+      # process-local, поэтому сравниваем приросты за час, а не абсолютные
+      # значения: рестарт сервиса не даёт ложного срабатывания.
+      # Сравниваются только успешные платежи и применённые активации.
+      - alert: PaymentWithoutActivation
+        expr: >-
+          sum(increase(vpn_platform_billing_payments_total{outcome="succeeded"}[1h]))
+          -
+          sum(increase(vpn_platform_subscription_activations_total{result="applied"}[1h]))
+          > 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Платежи без активации подписки"
+          description: >-
+            За последний час успешных платежей больше, чем применённых
+            активаций, на {{ $value | printf "%.0f" }}. Проверить:
+            SELECT count(*) FROM payments p LEFT JOIN subscription_grants g
+            ON g.source='paid' AND g.business_key = p.payment_id
+            WHERE p.status='succeeded'
+            AND p.checkout_type='subscription_purchase' AND g.id IS NULL;
+
+      # Событие в outbox не удалось опубликовать после всех попыток.
+      # Значит изменение состояния произошло, а downstream о нём не узнал.
+      - alert: OutboxEventsFailed
+        expr: vpn_platform_outbox_failed_total > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "События outbox в статусе failed"
+          description: >-
+            В event_outbox {{ $value | printf "%.0f" }} событий со статусом
+            failed. Они не доехали до Kafka.
+
+  - name: pipeline
+    interval: 30s
+    rules:
+      # Консьюмер не успевает или застрял на сообщении. Порог намеренно
+      # невысокий: при штатной нагрузке лаг держится около нуля.
+      - alert: KafkaConsumerLagHigh
+        expr: vpn_platform_kafka_consumer_lag > 50
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Отставание консьюмера {{ $labels.group }} на {{ $labels.topic }}"
+          description: >-
+            Группа {{ $labels.group }}, топик {{ $labels.topic }},
+            партиция {{ $labels.partition }}: отставание
+            {{ $value | printf "%.0f" }} сообщений держится 10 минут.
+
+      # Лаг не растёт, но и не убывает — характерный признак сообщения,
+      # которое обрабатывается по кругу и не коммитится.
+      - alert: KafkaConsumerLagStuck
+        expr: min_over_time(vpn_platform_kafka_consumer_lag[30m]) > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Лаг не уходит: {{ $labels.group }} / {{ $labels.topic }}"
+          description: >-
+            Партиция {{ $labels.partition }} топика {{ $labels.topic }}
+            держит ненулевое отставание уже полчаса. Вероятно, консьюмер
+            зациклился на одном сообщении.
+
+      # Очередь публикации растёт: publisher не успевает или Kafka недоступна.
+      - alert: OutboxDepthGrowing
+        expr: sum(vpn_platform_outbox_depth{status=~"pending|retry"}) > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Очередь outbox растёт"
+          description: >-
+            В outbox {{ $value | printf "%.0f" }} неопубликованных событий
+            дольше 10 минут.
+
+  - name: infrastructure
+    interval: 30s
+    rules:
+      # Нода не шлёт heartbeat. Пользователи на ней теряют доступ.
+      - alert: NodeDown
+        expr: vpn_platform_node_up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Нода {{ $labels.title }} не отвечает"
+          description: >-
+            {{ $labels.server_key }} ({{ $labels.country }}) не присылает
+            heartbeat более 5 минут.
+
+      # Сервис перестал отдавать метрики: упал, завис или потерял сеть.
+      - alert: ServiceDown
+        expr: up{job="vpn-platform-services"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Сервис {{ $labels.service }} недоступен"
+          description: >-
+            Prometheus не может собрать метрики с {{ $labels.service }}
+            уже 3 минуты.
+
+      # Ожидания блокировок в Postgres: споры за горячие строки.
+      - alert: PostgresLockWaits
+        expr: vpn_platform_postgres_lock_waits > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ожидания блокировок в Postgres"
+          description: >-
+            {{ $value | printf "%.0f" }} сессий ждут блокировку дольше
+            5 минут подряд.

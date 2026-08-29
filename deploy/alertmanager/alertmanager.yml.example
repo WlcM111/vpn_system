@@ -1,0 +1,50 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  # Группируем по имени алерта: одно уведомление на проблему, а не на каждую
+  # партицию отдельно.
+  group_by: ['alertname']
+  # Небольшая задержка перед первой отправкой — за это время подтянутся
+  # остальные срабатывания той же группы.
+  group_wait: 30s
+  group_interval: 5m
+  # Повтор для всё ещё активного алерта. Сутки — чтобы не забыть про висящую
+  # проблему, но и не спамить.
+  repeat_interval: 24h
+  receiver: telegram
+
+  routes:
+    # Денежные алерты повторяем чаще: цена промедления — неоказанная услуга
+    # при списанных деньгах.
+    - matchers:
+        - severity = "critical"
+      receiver: telegram
+      group_wait: 10s
+      repeat_interval: 2h
+
+receivers:
+  - name: telegram
+    telegram_configs:
+      # Alertmanager НЕ разворачивает переменные окружения в конфиге.
+      # Значения подставляются вручную при копировании файла в alertmanager.yml.
+      # chat_id — число без кавычек.
+      - bot_token: PASTE_TELEGRAM_BOT_TOKEN
+        chat_id: 0
+        parse_mode: HTML
+        send_resolved: true
+        message: |
+          {{ if eq .Status "firing" }}🔴{{ else }}✅{{ end }} <b>{{ .CommonLabels.alertname }}</b>
+          {{ range .Alerts }}
+          {{ .Annotations.summary }}
+          {{ .Annotations.description }}
+          {{ end }}
+
+inhibit_rules:
+  # Если сервис лежит целиком, не заваливаем отдельными алертами про лаг
+  # и очередь — причина одна.
+  - source_matchers:
+      - alertname = "ServiceDown"
+    target_matchers:
+      - severity = "warning"
+    equal: ['service']
