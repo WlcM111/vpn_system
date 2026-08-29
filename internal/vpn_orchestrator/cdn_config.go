@@ -47,6 +47,19 @@ type CDNEndpoint struct {
 	PaddingMethod        string
 	ScMaxBufferedPosts   int
 	ScMinPostsIntervalMs string
+
+	// Параметры восходящего потока (Xray-core PR #5414). Пустое значение или
+	// ноль означают «не задано»: параметр не попадает в extra, и ядро
+	// использует свой дефолт. Так существующие ссылки не меняются.
+	UplinkHTTPMethod    string
+	UplinkDataPlacement string
+	UplinkDataKey       string
+	UplinkChunkSize     int
+	ScMaxEachPostBytes  int
+	SessionIDPlacement  string
+	SessionIDKey        string
+	SeqPlacement        string
+	SeqKey              string
 }
 
 // cdnConfigEnabled сообщает, включена ли выдача CDN глобально (рубильник в env).
@@ -190,15 +203,52 @@ func BuildCDNVLESSURLFromEndpoint(e CDNEndpoint, userUUID string) string {
 		scMin = "5"
 	}
 
-	// extra — JSON обфускации. Порядок ключей соответствует рабочему конфигу.
-	extraJSON := "{" +
-		`"xPaddingObfsMode":` + strconv.FormatBool(e.PaddingObfsMode) + "," +
-		`"xPaddingPlacement":"` + placement + `",` +
-		`"xPaddingKey":"` + pkey + `",` +
-		`"xPaddingMethod":"` + pmethod + `",` +
-		`"scMaxBufferedPosts":` + strconv.Itoa(scMax) + "," +
-		`"scMinPostsIntervalMs":"` + scMin + `"` +
-		"}"
+	// extra — JSON с параметрами транспорта, которые не выражаются отдельными
+	// query-параметрами vless://. Базовая часть описывает обфускацию padding и
+	// присутствует всегда: она заполняется значениями по умолчанию выше.
+	extraParts := []string{
+		`"xPaddingObfsMode":` + strconv.FormatBool(e.PaddingObfsMode),
+		`"xPaddingPlacement":"` + placement + `"`,
+		`"xPaddingKey":"` + pkey + `"`,
+		`"xPaddingMethod":"` + pmethod + `"`,
+		`"scMaxBufferedPosts":` + strconv.Itoa(scMax),
+		`"scMinPostsIntervalMs":"` + scMin + `"`,
+	}
+
+	// Параметры восходящего потока добавляются, только если заданы явно.
+	// Незаполненное поле не попадает в extra: клиент применит дефолт ядра, а
+	// ссылка останется байт в байт такой же, как до появления этих колонок.
+	// Это важно для обратной совместимости — у пользователей на руках уже
+	// выданные конфигурации, и менять их без нужды нельзя.
+	if v := strings.TrimSpace(e.UplinkHTTPMethod); v != "" {
+		extraParts = append(extraParts, `"uplinkHTTPMethod":"`+v+`"`)
+	}
+	if v := strings.TrimSpace(e.UplinkDataPlacement); v != "" {
+		extraParts = append(extraParts, `"uplinkDataPlacement":"`+v+`"`)
+	}
+	if v := strings.TrimSpace(e.UplinkDataKey); v != "" {
+		extraParts = append(extraParts, `"uplinkDataKey":"`+v+`"`)
+	}
+	if e.UplinkChunkSize > 0 {
+		extraParts = append(extraParts, `"uplinkChunkSize":`+strconv.Itoa(e.UplinkChunkSize))
+	}
+	if e.ScMaxEachPostBytes > 0 {
+		extraParts = append(extraParts, `"scMaxEachPostBytes":`+strconv.Itoa(e.ScMaxEachPostBytes))
+	}
+	if v := strings.TrimSpace(e.SessionIDPlacement); v != "" {
+		extraParts = append(extraParts, `"sessionIDPlacement":"`+v+`"`)
+	}
+	if v := strings.TrimSpace(e.SessionIDKey); v != "" {
+		extraParts = append(extraParts, `"sessionIDKey":"`+v+`"`)
+	}
+	if v := strings.TrimSpace(e.SeqPlacement); v != "" {
+		extraParts = append(extraParts, `"seqPlacement":"`+v+`"`)
+	}
+	if v := strings.TrimSpace(e.SeqKey); v != "" {
+		extraParts = append(extraParts, `"seqKey":"`+v+`"`)
+	}
+
+	extraJSON := "{" + strings.Join(extraParts, ",") + "}"
 
 	params := []string{
 		"encryption=none",

@@ -34,6 +34,19 @@ type AdminCDNEndpointRequest struct {
 	PaddingMethod        string `json:"padding_method,omitempty"`
 	ScMaxBufferedPosts   *int   `json:"sc_max_buffered_posts,omitempty"`
 	ScMinPostsIntervalMs string `json:"sc_min_posts_interval_ms,omitempty"`
+
+	// Параметры восходящего потока (Xray-core PR #5414). Опущенное поле
+	// сохраняется как пустое значение и в клиентскую ссылку не попадает,
+	// поэтому старые вызовы Admin API продолжают работать без изменений.
+	UplinkHTTPMethod    string `json:"uplink_http_method,omitempty"`
+	UplinkDataPlacement string `json:"uplink_data_placement,omitempty"`
+	UplinkDataKey       string `json:"uplink_data_key,omitempty"`
+	UplinkChunkSize     *int   `json:"uplink_chunk_size,omitempty"`
+	ScMaxEachPostBytes  *int   `json:"sc_max_each_post_bytes,omitempty"`
+	SessionIDPlacement  string `json:"session_id_placement,omitempty"`
+	SessionIDKey        string `json:"session_id_key,omitempty"`
+	SeqPlacement        string `json:"seq_placement,omitempty"`
+	SeqKey              string `json:"seq_key,omitempty"`
 }
 
 // ListEnabledCDNEndpoints возвращает все включённые CDN-эндпоинты,
@@ -48,7 +61,10 @@ func (r *Repository) ListEnabledCDNEndpoints(ctx context.Context) ([]CDNEndpoint
 			cdn_key, COALESCE(server_key, ''), enabled, sort_order, inbound_tag,
 			address, server_name, host, port, xhttp_path, mode, fingerprint, alpn, remarks,
 			padding_obfs_mode, padding_placement, padding_key, padding_method,
-			sc_max_buffered_posts, sc_min_posts_interval_ms
+			sc_max_buffered_posts, sc_min_posts_interval_ms,
+			uplink_http_method, uplink_data_placement, uplink_data_key,
+			uplink_chunk_size, sc_max_each_post_bytes,
+			session_id_placement, session_id_key, seq_placement, seq_key
 		FROM vpn_cdn_endpoints
 		WHERE enabled = TRUE
 		ORDER BY sort_order, id
@@ -66,6 +82,9 @@ func (r *Repository) ListEnabledCDNEndpoints(ctx context.Context) ([]CDNEndpoint
 			&e.Address, &e.ServerName, &e.Host, &e.Port, &e.XHTTPPath, &e.Mode, &e.Fingerprint, &e.ALPN, &e.Remarks,
 			&e.PaddingObfsMode, &e.PaddingPlacement, &e.PaddingKey, &e.PaddingMethod,
 			&e.ScMaxBufferedPosts, &e.ScMinPostsIntervalMs,
+			&e.UplinkHTTPMethod, &e.UplinkDataPlacement, &e.UplinkDataKey,
+			&e.UplinkChunkSize, &e.ScMaxEachPostBytes,
+			&e.SessionIDPlacement, &e.SessionIDKey, &e.SeqPlacement, &e.SeqKey,
 		); err != nil {
 			return nil, err
 		}
@@ -102,6 +121,17 @@ func (r *Repository) UpsertAdminCDNEndpoint(ctx context.Context, req AdminCDNEnd
 		scMax = *req.ScMaxBufferedPosts
 	}
 
+	// Ноль означает «не задано»: параметр не уедет в клиентскую ссылку,
+	// применится дефолт ядра Xray. Отрицательные значения приводим к нулю.
+	uplinkChunk := 0
+	if req.UplinkChunkSize != nil && *req.UplinkChunkSize > 0 {
+		uplinkChunk = *req.UplinkChunkSize
+	}
+	scMaxEachPost := 0
+	if req.ScMaxEachPostBytes != nil && *req.ScMaxEachPostBytes > 0 {
+		scMaxEachPost = *req.ScMaxEachPostBytes
+	}
+
 	var serverKey any
 	if req.ServerKey == "" {
 		serverKey = nil
@@ -114,7 +144,10 @@ func (r *Repository) UpsertAdminCDNEndpoint(ctx context.Context, req AdminCDNEnd
 			cdn_key, server_key, enabled, sort_order, inbound_tag,
 			address, server_name, host, port, xhttp_path, mode, fingerprint, alpn, remarks,
 			padding_obfs_mode, padding_placement, padding_key, padding_method,
-			sc_max_buffered_posts, sc_min_posts_interval_ms
+			sc_max_buffered_posts, sc_min_posts_interval_ms,
+			uplink_http_method, uplink_data_placement, uplink_data_key,
+			uplink_chunk_size, sc_max_each_post_bytes,
+			session_id_placement, session_id_key, seq_placement, seq_key
 		) VALUES (
 			$1, $2, $3, $4, COALESCE(NULLIF($20, ''), 'vless-xhttp-cdn-in'),
 			$5, $6, $7, $8, COALESCE(NULLIF($9, ''), '/api/uploadFile/'),
@@ -127,7 +160,8 @@ func (r *Repository) UpsertAdminCDNEndpoint(ctx context.Context, req AdminCDNEnd
 			COALESCE(NULLIF($16, ''), 'ssid'),
 			COALESCE(NULLIF($17, ''), 'tokenish'),
 			$18,
-			COALESCE(NULLIF($19, ''), '5')
+			COALESCE(NULLIF($19, ''), '5'),
+			$21, $22, $23, $24, $25, $26, $27, $28, $29
 		)
 		ON CONFLICT (cdn_key) DO UPDATE SET
 			server_key = EXCLUDED.server_key,
@@ -149,12 +183,24 @@ func (r *Repository) UpsertAdminCDNEndpoint(ctx context.Context, req AdminCDNEnd
 			padding_method = EXCLUDED.padding_method,
 			sc_max_buffered_posts = EXCLUDED.sc_max_buffered_posts,
 			sc_min_posts_interval_ms = EXCLUDED.sc_min_posts_interval_ms,
+			uplink_http_method = EXCLUDED.uplink_http_method,
+			uplink_data_placement = EXCLUDED.uplink_data_placement,
+			uplink_data_key = EXCLUDED.uplink_data_key,
+			uplink_chunk_size = EXCLUDED.uplink_chunk_size,
+			sc_max_each_post_bytes = EXCLUDED.sc_max_each_post_bytes,
+			session_id_placement = EXCLUDED.session_id_placement,
+			session_id_key = EXCLUDED.session_id_key,
+			seq_placement = EXCLUDED.seq_placement,
+			seq_key = EXCLUDED.seq_key,
 			updated_at = now()
 	`,
 		req.CDNKey, serverKey, enabled, sortOrder,
 		req.Address, req.ServerName, req.Host, port, req.XHTTPPath, req.Mode, req.Fingerprint, req.ALPN, req.Remarks,
 		paddingObfs, req.PaddingPlacement, req.PaddingKey, req.PaddingMethod,
 		scMax, req.ScMinPostsIntervalMs, req.InboundTag,
+		req.UplinkHTTPMethod, req.UplinkDataPlacement, req.UplinkDataKey,
+		uplinkChunk, scMaxEachPost,
+		req.SessionIDPlacement, req.SessionIDKey, req.SeqPlacement, req.SeqKey,
 	)
 	return err
 }

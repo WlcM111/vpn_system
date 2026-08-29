@@ -21,6 +21,19 @@ env:
   GO_VERSION: "1.26.6"
 
 jobs:
+  sql-schema:
+    name: SQL против схемы
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Установить Postgres 16
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-16
+      - name: Прогнать SQL-литералы через схему из миграций
+        run: |
+          chmod +x scripts/check_sql.sh
+          ./scripts/check_sql.sh
   lint:
     name: Lint
     runs-on: ubuntu-latest
