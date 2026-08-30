@@ -60,6 +60,14 @@ type CDNEndpoint struct {
 	SessionIDKey        string
 	SeqPlacement        string
 	SeqKey              string
+
+	// Параметры эталонной конфигурации из proxy-via-russian-cdn. Пустое
+	// значение означает «не передавать»: ядро применит свой дефолт, а
+	// ссылка останется прежней.
+	XPaddingBytes  string
+	XPaddingHeader string
+	EnableXmux     bool
+	XmuxJSON       string
 }
 
 // cdnConfigEnabled сообщает, включена ли выдача CDN глобально (рубильник в env).
@@ -246,6 +254,18 @@ func BuildCDNVLESSURLFromEndpoint(e CDNEndpoint, userUUID string) string {
 	}
 	if v := strings.TrimSpace(e.SeqKey); v != "" {
 		extraParts = append(extraParts, `"seqKey":"`+v+`"`)
+	}
+	if v := strings.TrimSpace(e.XPaddingBytes); v != "" {
+		extraParts = append(extraParts, `"xPaddingBytes":"`+v+`"`)
+	}
+	if v := strings.TrimSpace(e.XPaddingHeader); v != "" {
+		extraParts = append(extraParts, `"xPaddingHeader":"`+v+`"`)
+	}
+	// xmux передаётся только вместе с флагом: включённое мультиплексирование
+	// без параметров и параметры без флага одинаково бессмысленны.
+	if v := strings.TrimSpace(e.XmuxJSON); e.EnableXmux && v != "" {
+		extraParts = append(extraParts, `"enableXmux":true`)
+		extraParts = append(extraParts, `"xmux":`+v)
 	}
 
 	extraJSON := "{" + strings.Join(extraParts, ",") + "}"

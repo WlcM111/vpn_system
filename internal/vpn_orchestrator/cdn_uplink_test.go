@@ -229,3 +229,61 @@ func TestBuildCDNVLESSURL_EmptyInputs(t *testing.T) {
 		t.Errorf("при пустом UUID ожидалась пустая ссылка, получено: %s", got)
 	}
 }
+
+// Параметры xmux уезжают в extra только парой: флаг без параметров и
+// параметры без флага одинаково бессмысленны.
+func TestBuildCDNVLESSURL_XmuxPairOnly(t *testing.T) {
+	xmux := `{"maxConcurrency":"0","maxConnections":2,"cMaxReuseTimes":0,` +
+		`"hMaxRequestTimes":"100-200","hMaxReusableSecs":"300-600","hKeepAlivePeriod":0}`
+
+	t.Run("флаг без параметров", func(t *testing.T) {
+		e := baseEndpoint()
+		e.EnableXmux = true
+		got := extraFromURL(t, BuildCDNVLESSURLFromEndpoint(e, "11111111-2222-3333-4444-555555555555"))
+		if strings.Contains(got, "xmux") {
+			t.Errorf("xmux попал в extra без параметров: %s", got)
+		}
+	})
+
+	t.Run("параметры без флага", func(t *testing.T) {
+		e := baseEndpoint()
+		e.XmuxJSON = xmux
+		got := extraFromURL(t, BuildCDNVLESSURLFromEndpoint(e, "11111111-2222-3333-4444-555555555555"))
+		if strings.Contains(got, "xmux") {
+			t.Errorf("xmux попал в extra без флага: %s", got)
+		}
+	})
+
+	t.Run("флаг и параметры вместе", func(t *testing.T) {
+		e := baseEndpoint()
+		e.EnableXmux = true
+		e.XmuxJSON = xmux
+		got := extraFromURL(t, BuildCDNVLESSURLFromEndpoint(e, "11111111-2222-3333-4444-555555555555"))
+		for _, w := range []string{`"enableXmux":true`, `"maxConnections":2`, `"hMaxRequestTimes":"100-200"`} {
+			if !strings.Contains(got, w) {
+				t.Errorf("в extra нет %s\nполучено: %s", w, got)
+			}
+		}
+	})
+}
+
+// Обфускация padding из эталона попадает в extra при заполнении полей.
+func TestBuildCDNVLESSURL_PaddingEtalon(t *testing.T) {
+	e := baseEndpoint()
+	e.PaddingPlacement = "queryInHeader"
+	e.PaddingKey = "_dc"
+	e.XPaddingBytes = "100-1000"
+	e.XPaddingHeader = "X-Cache"
+
+	got := extraFromURL(t, BuildCDNVLESSURLFromEndpoint(e, "11111111-2222-3333-4444-555555555555"))
+	for _, w := range []string{
+		`"xPaddingPlacement":"queryInHeader"`,
+		`"xPaddingKey":"_dc"`,
+		`"xPaddingBytes":"100-1000"`,
+		`"xPaddingHeader":"X-Cache"`,
+	} {
+		if !strings.Contains(got, w) {
+			t.Errorf("в extra нет %s\nполучено: %s", w, got)
+		}
+	}
+}

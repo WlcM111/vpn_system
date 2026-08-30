@@ -2,6 +2,7 @@ package vpn_orchestrator
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -47,6 +48,12 @@ type AdminCDNEndpointRequest struct {
 	SessionIDKey        string `json:"session_id_key,omitempty"`
 	SeqPlacement        string `json:"seq_placement,omitempty"`
 	SeqKey              string `json:"seq_key,omitempty"`
+
+	// Параметры эталонной конфигурации из proxy-via-russian-cdn.
+	XPaddingBytes  string `json:"x_padding_bytes,omitempty"`
+	XPaddingHeader string `json:"x_padding_header,omitempty"`
+	EnableXmux     bool   `json:"enable_xmux,omitempty"`
+	XmuxJSON       string `json:"xmux_json,omitempty"`
 }
 
 // ListEnabledCDNEndpoints возвращает все включённые CDN-эндпоинты,
@@ -64,7 +71,8 @@ func (r *Repository) ListEnabledCDNEndpoints(ctx context.Context) ([]CDNEndpoint
 			sc_max_buffered_posts, sc_min_posts_interval_ms,
 			uplink_http_method, uplink_data_placement, uplink_data_key,
 			uplink_chunk_size, sc_max_each_post_bytes,
-			session_id_placement, session_id_key, seq_placement, seq_key
+			session_id_placement, session_id_key, seq_placement, seq_key,
+			x_padding_bytes, x_padding_header, enable_xmux, xmux_json
 		FROM vpn_cdn_endpoints
 		WHERE enabled = TRUE
 		ORDER BY sort_order, id
@@ -85,6 +93,7 @@ func (r *Repository) ListEnabledCDNEndpoints(ctx context.Context) ([]CDNEndpoint
 			&e.UplinkHTTPMethod, &e.UplinkDataPlacement, &e.UplinkDataKey,
 			&e.UplinkChunkSize, &e.ScMaxEachPostBytes,
 			&e.SessionIDPlacement, &e.SessionIDKey, &e.SeqPlacement, &e.SeqKey,
+			&e.XPaddingBytes, &e.XPaddingHeader, &e.EnableXmux, &e.XmuxJSON,
 		); err != nil {
 			return nil, err
 		}
@@ -123,6 +132,14 @@ func (r *Repository) UpsertAdminCDNEndpoint(ctx context.Context, req AdminCDNEnd
 
 	// Ноль означает «не задано»: параметр не уедет в клиентскую ссылку,
 	// применится дефолт ядра Xray. Отрицательные значения приводим к нулю.
+	// xmux имеет смысл только парой «флаг + параметры»: одно без другого
+	// в extra не уедет, поэтому нормализуем здесь.
+	xmuxJSON := strings.TrimSpace(req.XmuxJSON)
+	enableXmux := req.EnableXmux && xmuxJSON != ""
+	if !enableXmux {
+		xmuxJSON = ""
+	}
+
 	uplinkChunk := 0
 	if req.UplinkChunkSize != nil && *req.UplinkChunkSize > 0 {
 		uplinkChunk = *req.UplinkChunkSize
@@ -147,7 +164,8 @@ func (r *Repository) UpsertAdminCDNEndpoint(ctx context.Context, req AdminCDNEnd
 			sc_max_buffered_posts, sc_min_posts_interval_ms,
 			uplink_http_method, uplink_data_placement, uplink_data_key,
 			uplink_chunk_size, sc_max_each_post_bytes,
-			session_id_placement, session_id_key, seq_placement, seq_key
+			session_id_placement, session_id_key, seq_placement, seq_key,
+			x_padding_bytes, x_padding_header, enable_xmux, xmux_json
 		) VALUES (
 			$1, $2, $3, $4, COALESCE(NULLIF($20, ''), 'vless-xhttp-cdn-in'),
 			$5, $6, $7, $8, COALESCE(NULLIF($9, ''), '/api/uploadFile/'),
@@ -161,7 +179,8 @@ func (r *Repository) UpsertAdminCDNEndpoint(ctx context.Context, req AdminCDNEnd
 			COALESCE(NULLIF($17, ''), 'tokenish'),
 			$18,
 			COALESCE(NULLIF($19, ''), '5'),
-			$21, $22, $23, $24, $25, $26, $27, $28, $29
+			$21, $22, $23, $24, $25, $26, $27, $28, $29,
+			$30, $31, $32, $33
 		)
 		ON CONFLICT (cdn_key) DO UPDATE SET
 			server_key = EXCLUDED.server_key,
@@ -192,6 +211,10 @@ func (r *Repository) UpsertAdminCDNEndpoint(ctx context.Context, req AdminCDNEnd
 			session_id_key = EXCLUDED.session_id_key,
 			seq_placement = EXCLUDED.seq_placement,
 			seq_key = EXCLUDED.seq_key,
+			x_padding_bytes = EXCLUDED.x_padding_bytes,
+			x_padding_header = EXCLUDED.x_padding_header,
+			enable_xmux = EXCLUDED.enable_xmux,
+			xmux_json = EXCLUDED.xmux_json,
 			updated_at = now()
 	`,
 		req.CDNKey, serverKey, enabled, sortOrder,
@@ -201,6 +224,7 @@ func (r *Repository) UpsertAdminCDNEndpoint(ctx context.Context, req AdminCDNEnd
 		req.UplinkHTTPMethod, req.UplinkDataPlacement, req.UplinkDataKey,
 		uplinkChunk, scMaxEachPost,
 		req.SessionIDPlacement, req.SessionIDKey, req.SeqPlacement, req.SeqKey,
+		req.XPaddingBytes, req.XPaddingHeader, enableXmux, xmuxJSON,
 	)
 	return err
 }
