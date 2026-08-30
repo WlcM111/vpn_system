@@ -37,4 +37,5 @@ tmp/
 *.tfvars
 !*.tfvars.example
 .terraform.lock.hcl
-crash.log
+crash.log.env.bak-*
+dump.sql
