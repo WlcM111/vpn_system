@@ -48,8 +48,17 @@ type SubscriptionFeedResult struct {
 	Body        []byte
 	ContentType string
 	Access      *AccessState
-	Uplink      int64
-	Downlink    int64
+
+	// Uplink/Downlink — расход CDN-трафика за текущий период, просуммированный
+	// по узлам. Только CDN: обычный VLESS, gRPC и Hysteria сюда не входят —
+	// классификация идёт по inbound_tag учётки (см. ApplyNodeTraffic).
+	Uplink   int64
+	Downlink int64
+
+	// CDNNodes — число уникальных узлов, для которых CDN-ссылка реально попала
+	// в этот фид. Приходит из buildGroupedFeedLines, то есть из той же ветки,
+	// что добавляет ссылку.
+	CDNNodes int
 
 	// RoutingB64 — payload для заголовка `routing` (base64). Пустая строка
 	// означает «роутинг не отдаём» (fail-open).
@@ -89,13 +98,17 @@ func (s *Service) RenderSubscriptionFeedDetailed(ctx context.Context, token stri
 		return nil, ErrAccessDenied
 	}
 
-	// P5: трафик пользователя для заголовка Subscription-Userinfo (не критично —
-	// при ошибке просто отдадим нули, фид важнее).
+	// Расход для заголовка Subscription-Userinfo — ТОЛЬКО CDN-трафик за текущий
+	// период квоты. Раньше сюда шёл общий трафик по всем транспортам
+	// (GetUserTraffic), и обычное подключение по VLESS увеличивало цифру,
+	// которая по смыслу относится к CDN.
+	//
+	// Не критично: при ошибке отдадим нули, фид важнее заголовка.
 	var trafficUp, trafficDown int64
-	if tr, terr := s.repo.GetUserTraffic(ctx, access.TelegramID); terr == nil {
-		trafficUp, trafficDown = tr.Uplink, tr.Downlink
+	if up, down, terr := s.repo.SumCDNUsageForUser(ctx, access.TelegramID); terr == nil {
+		trafficUp, trafficDown = up, down
 	} else {
-		slog.Warn("get user traffic failed", "telegram_id", access.TelegramID, "err", terr)
+		slog.Warn("sum cdn usage failed", "telegram_id", access.TelegramID, "err", terr)
 	}
 
 	feedItems, err := s.ensureUserCredentials(ctx, access)
@@ -109,7 +122,7 @@ func (s *Service) RenderSubscriptionFeedDetailed(ctx context.Context, token stri
 	// Строки фида собираются блоками по странам: основной профиль страны и
 	// сразу за ним все альтернативные транспорты ЭТОГО ЖЕ сервера (CDN → gRPC →
 	// Hysteria). Каждая ссылка получает UUID своего сервера — см. feed_builder.go.
-	lines := s.buildGroupedFeedLines(ctx, feedItems)
+	lines, cdnServers := s.buildGroupedFeedLines(ctx, feedItems)
 	if len(lines) == 0 {
 		return nil, ErrAccessDenied
 	}
@@ -130,11 +143,24 @@ func (s *Service) RenderSubscriptionFeedDetailed(ctx context.Context, token stri
 	feed := strings.Join(lines, "\n") + "\n"
 	contentType := "text/plain; charset=utf-8"
 
+	// Результат собирается ПОСЛЕ вычисления contentType и routingB64: обе
+	// величины нужны здесь, а объявлены выше по потоку выполнения.
+	result := &SubscriptionFeedResult{
+		ContentType: contentType,
+		Access:      access,
+		Uplink:      trafficUp,
+		Downlink:    trafficDown,
+		CDNNodes:    len(cdnServers),
+		RoutingB64:  routingB64,
+	}
+
 	switch s.cfg.FeedFormat {
 	case "base64":
-		return &SubscriptionFeedResult{Body: []byte(base64.StdEncoding.EncodeToString([]byte(feed))), ContentType: contentType, Access: access, Uplink: trafficUp, Downlink: trafficDown, RoutingB64: routingB64}, nil
+		result.Body = []byte(base64.StdEncoding.EncodeToString([]byte(feed)))
+		return result, nil
 	case "plain":
-		return &SubscriptionFeedResult{Body: []byte(feed), ContentType: contentType, Access: access, Uplink: trafficUp, Downlink: trafficDown, RoutingB64: routingB64}, nil
+		result.Body = []byte(feed)
+		return result, nil
 	default:
 		return nil, fmt.Errorf("unsupported SUBSCRIPTION_FEED_FORMAT: %s", s.cfg.FeedFormat)
 	}
@@ -557,14 +583,6 @@ func (s *Service) ApplyNodeTraffic(ctx context.Context, tx pgx.Tx, event *kafkac
 		return nil
 	}
 
-	// Суммарный кумулятивный трафик узла (для Prometheus-метрики / дашборда).
-	var totalUplink, totalDownlink int64
-
-	// Агрегаты одного отчёта: общий трафик и отдельно CDN-трафик по каждому
-	// пользователю. Считаются в памяти по одному событию, в БД уходят готовыми.
-	perUser := make(map[int64][2]int64, len(event.Items))
-	cdnPerUser := make(map[int64]int64, len(event.Items))
-
 	// Allowlist CDN-инбаундов строится из серверной конфигурации эндпоинтов.
 	// Никаких догадок по имени: тега нет в списке — трафик не CDN.
 	var cdnInbounds map[string]struct{}
@@ -572,32 +590,12 @@ func (s *Service) ApplyNodeTraffic(ctx context.Context, tx pgx.Tx, event *kafkac
 		cdnInbounds = cdnInboundAllowlist(s.loadCDNEndpoints(ctx))
 	}
 
-	for _, item := range event.Items {
-		if item.TelegramID == 0 {
-			continue
-		}
-		perUser[item.TelegramID] = [2]int64{
-			perUser[item.TelegramID][0] + item.Uplink,
-			perUser[item.TelegramID][1] + item.Downlink,
-		}
-		totalUplink += item.Uplink
-		totalDownlink += item.Downlink
+	agg := classifyTrafficItems(event.Items, cdnInbounds)
+	totalUplink, totalDownlink := agg.TotalUplink, agg.TotalDownlink
+	perUser, cdnPerUser := agg.PerUser, agg.CDNPerUser
 
-		// Классификация строго по inbound_tag учётки, сверенному с серверным
-		// allowlist'ом. Пустой тег (агент старой версии либо учётка, общая
-		// для нескольких инбаундов) и любой тег вне списка — трафик
-		// неклассифицирован: в квоту он не идёт.
-		if len(cdnInbounds) > 0 {
-			if item.InboundTag == "" {
-				// Ожидаемо ненулевая величина: основной и gRPC-профили делят
-				// один email, поэтому агент осознанно не проставляет им тег.
-				// Алертить надо на РЕЗКИЙ РОСТ относительно базовой линии, а
-				// не на любое ненулевое значение.
-				commonmetrics.CDNQuotaUnclassifiedTotal.WithLabelValues(nodeID).Inc()
-			} else if _, isCDN := cdnInbounds[item.InboundTag]; isCDN {
-				cdnPerUser[item.TelegramID] += item.Uplink + item.Downlink
-			}
-		}
+	for i := 0; i < agg.Unclassified; i++ {
+		commonmetrics.CDNQuotaUnclassifiedTotal.WithLabelValues(nodeID).Inc()
 	}
 
 	// Общий трафик пишем ОДНОЙ строкой на пользователя: у него теперь несколько
@@ -635,7 +633,7 @@ func (s *Service) applyCDNQuota(
 	ctx context.Context,
 	tx pgx.Tx,
 	nodeID, serverKey string,
-	cdnPerUser map[int64]int64,
+	cdnPerUser map[int64][2]int64,
 	at time.Time,
 ) error {
 	if !s.cfg.CDNQuota.Enabled || len(cdnPerUser) == 0 {
@@ -646,9 +644,11 @@ func (s *Service) applyCDNQuota(
 	}
 	periodKey := calendarPeriodKey(at)
 
-	for telegramID, observed := range cdnPerUser {
+	for telegramID, tr := range cdnPerUser {
+		observedUplink, observedDownlink := tr[0], tr[1]
+		observed := observedUplink + observedDownlink
 		state, err := s.repo.ApplyObservationTx(ctx, tx, telegramID, nodeID, observed,
-			s.cfg.CDNQuota.LimitBytes, periodKey, at)
+			observedUplink, s.cfg.CDNQuota.LimitBytes, periodKey, at)
 		if err != nil {
 			return err
 		}
