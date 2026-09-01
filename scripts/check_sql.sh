@@ -16,10 +16,31 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PGVER="${PGVER:-16}"
-PGBIN="${PGBIN:-/usr/lib/postgresql/${PGVER}/bin}"
 PGPORT="${CHECK_SQL_PORT:-5455}"
+
+# Каталог с бинарниками Postgres. Явно заданный PGBIN имеет приоритет; иначе
+# перебираем известные размещения: Debian/Ubuntu, Homebrew на Apple Silicon и
+# на Intel, MacPorts, и в последнюю очередь — initdb из PATH.
+if [ -z "${PGBIN:-}" ]; then
+  for candidate in \
+    "/usr/lib/postgresql/${PGVER}/bin" \
+    "/opt/homebrew/opt/postgresql@${PGVER}/bin" \
+    "/usr/local/opt/postgresql@${PGVER}/bin" \
+    "/opt/local/lib/postgresql${PGVER}/bin" \
+    "/usr/pgsql-${PGVER}/bin"
+  do
+    if [ -x "${candidate}/initdb" ]; then PGBIN="${candidate}"; break; fi
+  done
+fi
+if [ -z "${PGBIN:-}" ] && command -v initdb >/dev/null 2>&1; then
+  PGBIN="$(dirname "$(command -v initdb)")"
+fi
+
+# Unix-сокет ограничен 104 символами пути (macOS) / 108 (Linux), а mktemp на
+# macOS возвращает длинный путь вида /var/folders/xx/.../T/tmp.XXXX. Кладём
+# сокет в короткий каталог, иначе postgres не стартует.
 PGDATA="$(mktemp -d)/data"
-PGSOCK="$(mktemp -d)"
+PGSOCK="$(mktemp -d "${TMPDIR:-/tmp}/pgs.XXXXXX")"
 
 # Postgres отказывается стартовать от root. Если скрипт запущен под root,
 # перезапускаем его от непривилегированного пользователя.
@@ -36,9 +57,14 @@ if [ "$(id -u)" = "0" ]; then
   exec su "${RUNAS}" -c "PGVER='${PGVER}' PGBIN='${PGBIN}' CHECK_SQL_PORT='${PGPORT}' bash '${WORKDIR}/src/scripts/check_sql.sh'"
 fi
 
-if [ ! -x "${PGBIN}/initdb" ]; then
-  echo "Не найден initdb в ${PGBIN}."
-  echo "Установите postgresql-${PGVER} или задайте PGBIN."
+if [ -z "${PGBIN:-}" ] || [ ! -x "${PGBIN}/initdb" ]; then
+  echo "Не найден initdb."
+  echo
+  echo "Linux:  apt-get install -y postgresql-${PGVER}"
+  echo "macOS:  brew install postgresql@${PGVER}"
+  echo
+  echo "Либо укажите каталог явно:"
+  echo "  PGBIN=/путь/к/bin scripts/check_sql.sh"
   exit 2
 fi
 
