@@ -2,6 +2,7 @@ package vpn_orchestrator
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +15,60 @@ import (
 	"vpn-platform/internal/common/ratelimit"
 	commonredis "vpn-platform/internal/common/redis"
 )
+
+// ============================================================================
+// Заголовки подписки для Happ.
+//
+// Формат заголовков — из официальной документации Happ:
+// https://www.happ.su/main/dev-docs/app-management
+//
+//	profile-title          — имя подписки, plain или "base64:" + base64(UTF-8),
+//	                         не длиннее 25 символов;
+//	subscription-userinfo  — одна строка, поля через "; ":
+//	                         upload, download, total (байты), expire (unix).
+//
+// Клиент показывает слева израсходованное (upload + download), справа после
+// "/" — total.
+// ============================================================================
+
+// subscriptionProfileTitle — отображаемое имя ВСЕЙ подписки.
+//
+// Значок ускорения относится к подписке целиком, а не к отдельным
+// конфигурациям: в имена конфигураций он не добавляется.
+const subscriptionProfileTitle = "⚡ House VPN"
+
+// cdnDisplayBytesPerNode — объём CDN-трафика, который показывается в Happ за
+// каждый узел с активной CDN-конфигурацией. Итоговое total = n × это значение.
+//
+// ЕДИНИЦЫ. Значение десятичное (10^9), как принято в остальном проекте:
+// defaultCDNQuotaLimitBytes = 20_000_000_000 назван «20 GB».
+//
+// ВНИМАНИЕ: это витрина, а НЕ лимит. Фактическое ограничение задаётся
+// CDN_QUOTA_LIMIT_BYTES и здесь сознательно не используется: изменение витрины
+// не должно менять тарифную политику.
+const cdnDisplayBytesPerNode int64 = 10_000_000_000
+
+// encodeProfileTitle кодирует имя подписки для HTTP-заголовка.
+//
+// Заголовки HTTP ограничены ISO-8859-1 (RFC 7230 §3.2.4), а «⚡» (U+26A1) в
+// эту кодировку не входит: без base64 клиент получит искажённые байты.
+func encodeProfileTitle(title string) string {
+	return "base64:" + base64.StdEncoding.EncodeToString([]byte(title))
+}
+
+// cdnTotalBytes считает значение поля total для n узлов.
+//
+// n = 0 даёт 0: по соглашению subscription-userinfo это означает «объём не
+// ограничен», и шкала расхода в клиенте не рисуется.
+//
+// Переполнение int64 недостижимо: при 10^10 байт на узел предел наступил бы
+// примерно на 920 миллионах узлов.
+func cdnTotalBytes(nodes int) int64 {
+	if nodes <= 0 {
+		return 0
+	}
+	return int64(nodes) * cdnDisplayBytesPerNode
+}
 
 type HTTPHandlers struct {
 	service      *Service
@@ -84,12 +139,30 @@ func (h *HTTPHandlers) handleSubscriptionFeed(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	w.Header().Set("Content-Type", res.ContentType)
+	writeSubscriptionHeaders(w, res)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(res.Body)
+}
+
+// writeSubscriptionHeaders выставляет все заголовки успешного ответа подписки.
+//
+// Выделено из обработчика, чтобы состав заголовков проверялся тестом без
+// поднятого сервиса: ошибка здесь не роняет запрос, а тихо ломает отображение
+// в клиенте — такие дефекты замечают пользователи, а не мониторинг.
+func writeSubscriptionHeaders(w http.ResponseWriter, res *SubscriptionFeedResult) {
+	if res.ContentType != "" {
+		w.Header().Set("Content-Type", res.ContentType)
+	}
+	// Расход обязан обновляться при каждом обновлении подписки. Кэш здесь —
+	// прямая причина «зависшей» цифры у пользователя, поэтому запрет полный:
+	// no-store для CDN и прокси, no-cache и Expires для старых клиентов.
+	// ETag сознательно не выставляется: ответ 304 оставил бы у клиента
+	// прежние значения upload/download.
 	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Expires", "0")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Profile-Title", "House VPN")
+	w.Header().Set("Profile-Title", encodeProfileTitle(subscriptionProfileTitle))
 	// Интервал автообновления подписки в часах. 5 вместо суток: правки
 	// манифеста маршрутизации и состава узлов доезжают до пользователей
 	// в тот же день, а не на следующий.
@@ -100,17 +173,23 @@ func (h *HTTPHandlers) handleSubscriptionFeed(w http.ResponseWriter, r *http.Req
 	if res.RoutingB64 != "" {
 		w.Header().Set("routing", res.RoutingB64)
 	}
-	if res.Access != nil {
-		until := res.Access.AccessUntil
-		if res.Access.Status == "grace" {
-			until = res.Access.GraceUntil
-		}
-		if until != nil {
-			w.Header().Set("Subscription-Userinfo", fmt.Sprintf("upload=%d; download=%d; total=0; expire=%d", res.Uplink, res.Downlink, until.Unix()))
-		}
+	if res.Access == nil {
+		return
 	}
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(res.Body)
+	until := res.Access.AccessUntil
+	if res.Access.Status == "grace" {
+		until = res.Access.GraceUntil
+	}
+	if until == nil {
+		return
+	}
+	// upload/download — только CDN-трафик за текущий период квоты
+	// (Repository.SumCDNUsageForUser). total — n × объём на узел, где n
+	// посчитано по фактически выданным CDN-ссылкам этого же ответа. Оба числа
+	// и срок действия уходят одним заголовком, как требует документация Happ.
+	w.Header().Set("Subscription-Userinfo", fmt.Sprintf(
+		"upload=%d; download=%d; total=%d; expire=%d",
+		res.Uplink, res.Downlink, cdnTotalBytes(res.CDNNodes), until.Unix()))
 }
 
 func (h *HTTPHandlers) allowSubscriptionRequest(ctx context.Context, token string) bool {

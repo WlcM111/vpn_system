@@ -24,15 +24,38 @@ import (
 // buildGroupedFeedLines собирает все строки подписки пользователя.
 // feedItems ожидаются отсортированными по sort_order (так отдаёт Allocator) —
 // этот порядок и определяет порядок стран в клиенте.
-func (s *Service) buildGroupedFeedLines(ctx context.Context, feedItems []FeedItem) []string {
-	if len(feedItems) == 0 {
-		return nil
-	}
-
+//
+// Вторым значением возвращается множество server_key узлов, для которых в фид
+// РЕАЛЬНО попала CDN-ссылка. Это единственный допустимый источник величины n
+// для заголовка subscription-userinfo: она получается не отдельным запросом к
+// БД, а по построению — из той же ветки, которая добавляет строку. Поэтому
+// «показали объём, но ссылку не выдали» и обратное невозможны в принципе.
+//
+// Множество, а не счётчик: у одного узла может быть несколько транспортов и
+// несколько пул-айтемов, но в n он обязан войти ровно один раз.
+func (s *Service) buildGroupedFeedLines(ctx context.Context, feedItems []FeedItem) ([]string, map[string]struct{}) {
 	// Таблицы эндпоинтов читаем ОДИН раз на весь фид, а не на каждую страну.
-	cdnEndpoints := s.loadCDNEndpoints(ctx)
-	grpcEndpoints := s.loadGRPCEndpoints(ctx)
-	hysteriaEndpoints := s.loadHysteriaEndpoints(ctx)
+	return s.buildGroupedFeedLinesWithEndpoints(
+		feedItems,
+		s.loadCDNEndpoints(ctx),
+		s.loadGRPCEndpoints(ctx),
+		s.loadHysteriaEndpoints(ctx),
+	)
+}
+
+// buildGroupedFeedLinesWithEndpoints — та же сборка, но эндпоинты передаются
+// готовыми. Выделено, чтобы правило подсчёта n проверялось unit-тестом без
+// поднятого Postgres: именно здесь решается, попадёт ли узел и в фид, и в n.
+func (s *Service) buildGroupedFeedLinesWithEndpoints(
+	feedItems []FeedItem,
+	cdnEndpoints []CDNEndpoint,
+	grpcEndpoints []GRPCEndpoint,
+	hysteriaEndpoints []HysteriaEndpoint,
+) ([]string, map[string]struct{}) {
+	cdnServers := make(map[string]struct{}, len(feedItems))
+	if len(feedItems) == 0 {
+		return nil, cdnServers
+	}
 
 	lines := make([]string, 0, len(feedItems)*4)
 	seenServers := make(map[string]struct{}, len(feedItems))
@@ -57,6 +80,9 @@ func (s *Service) buildGroupedFeedLines(ctx context.Context, feedItems []FeedIte
 		if endpoint, ok := selectCDNForServer(cdnEndpoints, serverKey); ok {
 			if url := BuildCDNVLESSURLFromEndpoint(endpoint, userUUID); url != "" {
 				lines = append(lines, url)
+				// Узел засчитывается ровно там, где ссылка добавлена в фид.
+				// Пустой URL (невалидный эндпоинт) узел не засчитывает.
+				cdnServers[serverKey] = struct{}{}
 			}
 		}
 		if endpoint, ok := selectGRPCForServer(grpcEndpoints, serverKey); ok {
@@ -71,5 +97,5 @@ func (s *Service) buildGroupedFeedLines(ctx context.Context, feedItems []FeedIte
 		}
 	}
 
-	return lines
+	return lines, cdnServers
 }

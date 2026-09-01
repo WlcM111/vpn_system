@@ -103,6 +103,21 @@ groups:
   - name: infrastructure
     interval: 30s
     rules:
+      # Backup не создавался дольше суток с запасом. Метрика пишется скриптом
+      # vpn-backup.sh через textfile collector node_exporter. Если node_exporter
+      # не установлен, метрики не будет и алерт не сработает — это отдельный
+      # риск, отмеченный в конце гайда.
+      - alert: BackupMissing
+        expr: time() - vpn_backup_last_success_timestamp_seconds > 108000
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backup не создавался более 30 часов"
+          description: >-
+            Последний успешный backup был
+            {{ $value | humanizeDuration }} назад. Проверить:
+            journalctl -u vpn-backup.service -n 50
       # Нода не шлёт heartbeat. Пользователи на ней теряют доступ.
       - alert: NodeDown
         expr: vpn_platform_node_up == 0

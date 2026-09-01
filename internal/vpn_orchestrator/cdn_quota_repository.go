@@ -62,6 +62,7 @@ func (r *Repository) ApplyObservationTx(
 	telegramID int64,
 	nodeID string,
 	observed int64,
+	observedUplink int64,
 	limitBytes int64,
 	periodKey string,
 	at time.Time,
@@ -71,6 +72,12 @@ func (r *Repository) ApplyObservationTx(
 	}
 	if observed < 0 {
 		return nil, fmt.Errorf("apply cdn observation: negative observed %d", observed)
+	}
+	if observedUplink < 0 {
+		return nil, fmt.Errorf("apply cdn observation: negative observed uplink %d", observedUplink)
+	}
+	if observedUplink > observed {
+		return nil, fmt.Errorf("apply cdn observation: observed uplink %d exceeds total %d", observedUplink, observed)
 	}
 	if limitBytes <= 0 {
 		return nil, fmt.Errorf("apply cdn observation: non-positive limit %d", limitBytes)
@@ -102,10 +109,11 @@ func (r *Repository) ApplyObservationTx(
 		ups AS (
 		INSERT INTO vpn_user_cdn_quota (
 			telegram_id, node_id, period_key, period_started_at,
-			baseline_bytes, observed_bytes, limit_bytes,
+			baseline_bytes, observed_bytes,
+			baseline_uplink_bytes, observed_uplink_bytes, limit_bytes,
 			state, revision, last_report_at, created_at, updated_at
 		)
-		VALUES ($1, $2, $5, $6, $3, $3, $4, 'active', 0, $6, now(), now())
+		VALUES ($1, $2, $5, $6, $3, $3, $7, $7, $4, 'active', 0, $6, now(), now())
 		ON CONFLICT (telegram_id, node_id) DO UPDATE SET
 			-- Откат счётчика ниже базы = рестарт Xray или переустановка агента.
 			-- Перебазируемся так, чтобы уже начисленное потребление сохранилось.
@@ -118,6 +126,19 @@ func (r *Repository) ApplyObservationTx(
 				WHEN EXCLUDED.observed_bytes < vpn_user_cdn_quota.baseline_bytes
 					THEN $3
 				ELSE GREATEST(vpn_user_cdn_quota.observed_bytes, EXCLUDED.observed_bytes)
+			END,
+			-- Восходящая часть перебазируется по ТОМУ ЖЕ признаку отката, что и
+			-- сумма: обе величины приходят одним отчётом, и расщеплять их по
+			-- разным условиям значило бы получить отрицательный download.
+			baseline_uplink_bytes = CASE
+				WHEN EXCLUDED.observed_bytes < vpn_user_cdn_quota.baseline_bytes
+					THEN GREATEST($7 - (vpn_user_cdn_quota.observed_uplink_bytes - vpn_user_cdn_quota.baseline_uplink_bytes), 0)
+				ELSE vpn_user_cdn_quota.baseline_uplink_bytes
+			END,
+			observed_uplink_bytes = CASE
+				WHEN EXCLUDED.observed_bytes < vpn_user_cdn_quota.baseline_bytes
+					THEN $7
+				ELSE GREATEST(vpn_user_cdn_quota.observed_uplink_bytes, EXCLUDED.observed_uplink_bytes)
 			END,
 			limit_bytes = EXCLUDED.limit_bytes,
 			last_report_at = $6,
@@ -134,7 +155,7 @@ func (r *Repository) ApplyObservationTx(
 		       ups.revision, ups.last_report_at,
 		       COALESCE($3::bigint < prev.prev_baseline, false) AS rebased
 		FROM ups LEFT JOIN prev ON true
-	`, telegramID, nodeID, observed, limitBytes, periodKey, at.UTC()).
+	`, telegramID, nodeID, observed, limitBytes, periodKey, at.UTC(), observedUplink).
 		Scan(&st.PeriodKey, &st.UsedBytes, &st.LimitBytes, &prevState, &st.Revision, &lastReport, &rebased)
 	if err != nil {
 		return nil, fmt.Errorf("apply cdn observation tg=%d node=%s: %w", telegramID, nodeID, err)
@@ -296,6 +317,39 @@ func (r *Repository) ExhaustedNodesForUser(ctx context.Context, telegramID int64
 		out[nodeID] = struct{}{}
 	}
 	return out, rows.Err()
+}
+
+// SumCDNUsageForUser возвращает расход CDN-трафика пользователя за текущий
+// период, просуммированный по всем узлам, раздельно по направлениям.
+//
+// downlink выводится вычитанием: обе величины — high-water mark одного отчёта,
+// перебазируются одновременно, поэтому разность неотрицательна по построению.
+// GREATEST оставлен как страховка для строк, попавших в таблицу до миграции 0018:
+// у них baseline_uplink_bytes и observed_uplink_bytes равны нулю.
+//
+// Ошибка чтения не критична для выдачи подписки: вызывающий код логирует её и
+// отдаёт нули, потому что фид важнее заголовка.
+func (r *Repository) SumCDNUsageForUser(ctx context.Context, telegramID int64) (uplink, downlink int64, err error) {
+	if telegramID == 0 {
+		return 0, 0, nil
+	}
+
+	queryCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	err = r.pool.QueryRow(queryCtx, `
+		SELECT
+			COALESCE(SUM(GREATEST(observed_uplink_bytes - baseline_uplink_bytes, 0)), 0),
+			COALESCE(SUM(GREATEST(
+				(observed_bytes - baseline_bytes)
+				- (observed_uplink_bytes - baseline_uplink_bytes), 0)), 0)
+		FROM vpn_user_cdn_quota
+		WHERE telegram_id = $1
+	`, telegramID).Scan(&uplink, &downlink)
+	if err != nil {
+		return 0, 0, fmt.Errorf("sum cdn usage tg=%d: %w", telegramID, err)
+	}
+	return uplink, downlink, nil
 }
 
 // CDNQuotaSummary — агрегаты для метрик. Кардинальность намеренно ограничена
