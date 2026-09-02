@@ -2,6 +2,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: vpn-platform-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
@@ -19,6 +20,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: vpn-platform-redis
+    restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "127.0.0.1:6379:6379"
@@ -33,6 +35,7 @@ services:
   kafka:
     image: apache/kafka:3.9.1
     container_name: vpn-platform-kafka
+    restart: unless-stopped
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -110,6 +113,7 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.billing-service
     container_name: vpn-platform-billing-service
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
@@ -158,6 +162,7 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.user-subscription-service
     container_name: vpn-platform-user-subscription-service
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
@@ -203,6 +208,7 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.vpn-orchestrator-service
     container_name: vpn-platform-vpn-orchestrator-service
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
@@ -283,6 +289,7 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.crypto-billing-service
     container_name: vpn-platform-crypto-billing-service
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
@@ -327,6 +334,7 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.tg-bot-gateway
     container_name: vpn-platform-tg-bot-gateway
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
