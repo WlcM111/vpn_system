@@ -205,6 +205,20 @@ var (
 		Help: "Node traffic in bytes by direction (uplink/downlink). Populated by node-agent (future).",
 	}, []string{"server_key", "country", "direction"})
 
+	// Признак того, что для узла задана полоса канала. Без него ноль в
+	// vpn_platform_node_bandwidth_percent неотличим от «канал свободен»:
+	// именно так узел с забитым каналом полгода выглядел незагруженным.
+	NodeBandwidthConfigured = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_node_bandwidth_configured",
+		Help: "1 if bandwidth_mbps is set for the node, 0 otherwise.",
+	}, []string{"server_key", "country", "title"})
+
+	// Заявленная полоса канала узла в Мбит/с. Ноль означает «не задана».
+	NodeBandwidthMbps = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_node_bandwidth_mbps",
+		Help: "Configured node uplink capacity in Mbps; 0 means not configured.",
+	}, []string{"server_key", "country", "title"})
+
 	// Время последнего успешного сбора DB-метрик (для контроля живости сборщика).
 	MetricsCollectorLastRun = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "vpn_platform_metrics_collector_last_run_timestamp",
@@ -323,6 +337,8 @@ func init() {
 		NodesCount, PoolCapacityTotal, PoolActiveTotal, PoolItemsCount,
 		CryptoInvoicesByStatus, CryptoRevenueTotal, CryptoPaidCount,
 		NodeTrafficBytes,
+		NodeBandwidthConfigured,
+		NodeBandwidthMbps,
 		NodeTrafficBps,
 		NodeOnlineUsers,
 		NodeBandwidthPercent, MetricsCollectorLastRun,

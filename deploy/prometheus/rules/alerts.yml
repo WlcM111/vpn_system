@@ -118,6 +118,23 @@ groups:
             Последний успешный backup был
             {{ $value | humanizeDuration }} назад. Проверить:
             journalctl -u vpn-backup.service -n 50
+            # У узла не задана полоса канала. Следствия два: на дашборде канал
+      # всегда нулевой, и балансировщик считает узел свободным, даже когда
+      # канал забит — новые пользователи продолжают на него распределяться.
+      - alert: NodeBandwidthNotConfigured
+        expr: vpn_platform_node_bandwidth_configured == 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Полоса канала не задана: {{ $labels.title }}"
+          description: >-
+            У узла {{ $labels.server_key }} ({{ $labels.country }})
+            bandwidth_mbps = 0. Загрузка канала не считается, и узел
+            участвует в распределении как свободный. Задать:
+            UPDATE vpn_servers SET bandwidth_mbps = <Мбит/с>
+            WHERE server_key = '{{ $labels.server_key }}';
+
       # Нода не шлёт heartbeat. Пользователи на ней теряют доступ.
       - alert: NodeDown
         expr: vpn_platform_node_up == 0

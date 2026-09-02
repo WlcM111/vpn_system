@@ -362,6 +362,8 @@ func (c *MetricsCollector) collectNodes(ctx context.Context) error {
 	commonmetrics.NodeTrafficBps.Reset()
 	commonmetrics.NodeOnlineUsers.Reset()
 	commonmetrics.NodeBandwidthPercent.Reset()
+	commonmetrics.NodeBandwidthConfigured.Reset()
+	commonmetrics.NodeBandwidthMbps.Reset()
 
 	var (
 		totalEnabled, totalDisabled, totalAlive, totalStale int
@@ -390,10 +392,16 @@ func (c *MetricsCollector) collectNodes(ctx context.Context) error {
 		commonmetrics.NodeTrafficBps.WithLabelValues(serverKey, country, title, "downlink").Set(float64(downlinkBps))
 
 		bwPct := 0.0
+		configured := 0.0
 		if bandwidthMbps > 0 {
 			bwPct = float64(uplinkBps+downlinkBps) / (float64(bandwidthMbps) * 1_000_000) * 100.0
+			configured = 1.0
 		}
 		commonmetrics.NodeBandwidthPercent.WithLabelValues(lbl...).Set(bwPct)
+		// Признак настройки отдаём отдельно: без него ноль в проценте
+		// означает и «канал свободен», и «полоса не задана».
+		commonmetrics.NodeBandwidthConfigured.WithLabelValues(lbl...).Set(configured)
+		commonmetrics.NodeBandwidthMbps.WithLabelValues(lbl...).Set(float64(bandwidthMbps))
 
 		commonmetrics.NodeActiveUsers.WithLabelValues(lbl...).Set(float64(activeUsers))
 		commonmetrics.NodeMaxUsers.WithLabelValues(lbl...).Set(float64(maxUsers))
