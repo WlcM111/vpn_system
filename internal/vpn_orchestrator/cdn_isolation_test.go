@@ -53,13 +53,13 @@ func TestSkipCDNRemovesOnlyCDNProfile(t *testing.T) {
 	svc := &Service{}
 	cdn, grpc := testEndpoints()
 
-	full := svc.buildUserProfiles(baseProfile(), "lt-main-1", cdn, grpc, false)
+	full := svc.buildUserProfiles(baseProfile(), "lt-main-1", cdn, grpc, nil, false)
 	if got, want := tags(full), []string{"vless-grpc-cdn-in", "vless-ws-in", "vless-xhttp-cdn-in"}; len(got) != 3 ||
 		got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
 		t.Fatalf("полный набор профилей: %v, ожидалось %v", got, want)
 	}
 
-	skipped := svc.buildUserProfiles(baseProfile(), "lt-main-1", cdn, grpc, true)
+	skipped := svc.buildUserProfiles(baseProfile(), "lt-main-1", cdn, grpc, nil, true)
 	got := tags(skipped)
 	want := []string{"vless-grpc-cdn-in", "vless-ws-in"}
 	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
@@ -79,7 +79,7 @@ func TestSkipCDNLeavesBaseProfileIntact(t *testing.T) {
 	cdn, grpc := testEndpoints()
 	base := baseProfile()
 
-	skipped := svc.buildUserProfiles(base, "lt-main-1", cdn, grpc, true)
+	skipped := svc.buildUserProfiles(base, "lt-main-1", cdn, grpc, nil, true)
 	var found bool
 	for _, p := range skipped {
 		if p.InboundTag != base.InboundTag {
@@ -107,7 +107,7 @@ func TestRevokePathAlwaysIncludesCDN(t *testing.T) {
 	svc := &Service{}
 	cdn, grpc := testEndpoints()
 
-	profiles := svc.buildUserProfiles(baseProfile(), "lt-main-1", cdn, grpc, false)
+	profiles := svc.buildUserProfiles(baseProfile(), "lt-main-1", cdn, grpc, nil, false)
 	var hasCDN bool
 	for _, p := range profiles {
 		if p.InboundTag == "vless-xhttp-cdn-in" {

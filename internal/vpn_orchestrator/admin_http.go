@@ -18,6 +18,8 @@ func (h *HTTPHandlers) RegisterAdmin(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/grpc-endpoints/", h.withAdminAuth(h.handleAdminGRPCEndpointByKey))
 	mux.HandleFunc("/admin/hysteria-endpoints", h.withAdminAuth(h.handleAdminHysteriaEndpoints))
 	mux.HandleFunc("/admin/hysteria-endpoints/", h.withAdminAuth(h.handleAdminHysteriaEndpointByKey))
+	mux.HandleFunc("/admin/reality-endpoints", h.withAdminAuth(h.handleAdminRealityEndpoints))
+	mux.HandleFunc("/admin/reality-endpoints/", h.withAdminAuth(h.handleAdminRealityEndpointByKey))
 	mux.HandleFunc("/admin/users/", h.withAdminAuth(h.handleAdminUserActions))
 }
 
@@ -244,6 +246,54 @@ func (h *HTTPHandlers) handleAdminHysteriaEndpointByKey(w http.ResponseWriter, r
 		return
 	}
 	if err := h.service.repo.DeleteHysteriaEndpoint(r.Context(), hysteriaKey); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAdminRealityEndpoints создаёт или обновляет Reality-эндпоинт.
+//
+// Проверяются четыре обязательных поля, а не два, как у остальных транспортов:
+// без public_key и server_name сборщик ссылки вернёт пустую строку, и ошибка
+// всплывёт молча — у пользователя просто не появится профиль.
+func (h *HTTPHandlers) handleAdminRealityEndpoints(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req AdminRealityEndpointRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.RealityKey) == "" || strings.TrimSpace(req.Address) == "" {
+		http.Error(w, "reality_key and address are required", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.PublicKey) == "" || strings.TrimSpace(req.ServerName) == "" {
+		http.Error(w, "public_key and server_name are required", http.StatusBadRequest)
+		return
+	}
+	if err := h.service.repo.UpsertAdminRealityEndpoint(r.Context(), req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAdminRealityEndpointByKey удаляет Reality-эндпоинт по reality_key.
+func (h *HTTPHandlers) handleAdminRealityEndpointByKey(w http.ResponseWriter, r *http.Request) {
+	realityKey := strings.Trim(strings.TrimPrefix(r.URL.Path, "/admin/reality-endpoints/"), "/")
+	if realityKey == "" {
+		http.Error(w, "reality_key required", http.StatusBadRequest)
+		return
+	}
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := h.service.repo.DeleteRealityEndpoint(r.Context(), realityKey); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

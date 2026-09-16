@@ -33,7 +33,9 @@
     "fc00::/7",
     "fe80::/10"
   ],
-  "proxy_domains": [],
+  "proxy_domains": [
+    "domain:jut.su"
+  ],
   "proxy_ips": [],
   "block_domains": [],
   "geo_rules": {
@@ -44,7 +46,7 @@
     "direct_ips": [
       "geoip:ru"
     ],
-    "geoip_url": "https://race-src.com/geo/geoip.dat",
-    "geosite_url": "https://race-src.com/geo/geosite.dat"
+    "geoip_url": "https://geo.race-src.com/geo/geoip.dat",
+    "geosite_url": "https://geo.race-src.com/geo/geosite.dat"
   }
 }

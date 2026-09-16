@@ -40,6 +40,7 @@ func (s *Service) buildGroupedFeedLines(ctx context.Context, feedItems []FeedIte
 		s.loadCDNEndpoints(ctx),
 		s.loadGRPCEndpoints(ctx),
 		s.loadHysteriaEndpoints(ctx),
+		s.loadRealityEndpoints(ctx),
 	)
 }
 
@@ -51,6 +52,7 @@ func (s *Service) buildGroupedFeedLinesWithEndpoints(
 	cdnEndpoints []CDNEndpoint,
 	grpcEndpoints []GRPCEndpoint,
 	hysteriaEndpoints []HysteriaEndpoint,
+	realityEndpoints []RealityEndpoint,
 ) ([]string, map[string]struct{}) {
 	cdnServers := make(map[string]struct{}, len(feedItems))
 	if len(feedItems) == 0 {
@@ -92,6 +94,13 @@ func (s *Service) buildGroupedFeedLinesWithEndpoints(
 		}
 		if endpoint, ok := selectHysteriaForServer(hysteriaEndpoints, serverKey); ok {
 			if url := BuildHysteriaURL(endpoint, userUUID); url != "" {
+				lines = append(lines, url)
+			}
+		}
+		// Reality идёт последним: он самый новый транспорт, и в списке у
+		// пользователя логично видеть его после привычных.
+		if endpoint, ok := selectRealityForServer(realityEndpoints, serverKey); ok {
+			if url := BuildRealityVLESSURLFromEndpoint(endpoint, userUUID); url != "" {
 				lines = append(lines, url)
 			}
 		}

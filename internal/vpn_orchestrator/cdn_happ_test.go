@@ -57,10 +57,10 @@ func TestCDNTotalScalesWithNodeCount(t *testing.T) {
 		nodes int
 		want  int64
 	}{
-		{1, 10_000_000_000},
-		{2, 20_000_000_000},
-		{3, 30_000_000_000},
-		{4, 40_000_000_000},
+		{1, 10_737_418_240},
+		{2, 21_474_836_480},
+		{3, 32_212_254_720},
+		{4, 42_949_672_960},
 	}
 	for _, c := range cases {
 		if got := cdnTotalBytes(c.nodes); got != c.want {
@@ -90,7 +90,7 @@ func TestCDNNodeCountedOncePerServer(t *testing.T) {
 	}
 
 	_, cdnServers := svc.buildGroupedFeedLinesWithEndpoints(
-		items, cdnEndpointsFor("lt-main-1"), nil, nil)
+		items, cdnEndpointsFor("lt-main-1"), nil, nil, nil)
 
 	if len(cdnServers) != 1 {
 		t.Fatalf("две ссылки одной ноды дали n=%d, ожидалось 1", len(cdnServers))
@@ -123,7 +123,7 @@ func TestCDNNodeCountMatchesIssuedLinks(t *testing.T) {
 	}
 
 	lines, cdnServers := svc.buildGroupedFeedLinesWithEndpoints(
-		items, cdnEndpointsFor("lt-main-1", "ee-main-1"), nil, nil)
+		items, cdnEndpointsFor("lt-main-1", "ee-main-1"), nil, nil, nil)
 
 	if len(cdnServers) != 2 {
 		t.Fatalf("n=%d, ожидалось 2 (нода без CDN-эндпоинта не считается)", len(cdnServers))
@@ -220,14 +220,14 @@ func TestDisabledCDNNodeDropsOutOfCount(t *testing.T) {
 
 	// ListEnabledCDNEndpoints не отдаёт выключенные строки, поэтому
 	// «выключено» на входе выглядит как пустой список.
-	_, cdnServers := svc.buildGroupedFeedLinesWithEndpoints(items, nil, nil, nil)
+	_, cdnServers := svc.buildGroupedFeedLinesWithEndpoints(items, nil, nil, nil, nil)
 	if len(cdnServers) != 0 {
 		t.Fatalf("выключенная CDN-нода посчитана: n=%d", len(cdnServers))
 	}
 
 	// Нода добавлена — n растёт.
 	_, cdnServers = svc.buildGroupedFeedLinesWithEndpoints(
-		items, cdnEndpointsFor("lt-main-1"), nil, nil)
+		items, cdnEndpointsFor("lt-main-1"), nil, nil, nil)
 	if len(cdnServers) != 1 {
 		t.Fatalf("добавленная CDN-нода не посчитана: n=%d", len(cdnServers))
 	}
@@ -249,7 +249,7 @@ func TestBrokenCDNEndpointDoesNotCount(t *testing.T) {
 		InboundTag: "vless-xhttp-cdn-in", Address: "",
 	}}
 
-	_, cdnServers := svc.buildGroupedFeedLinesWithEndpoints(items, broken, nil, nil)
+	_, cdnServers := svc.buildGroupedFeedLinesWithEndpoints(items, broken, nil, nil, nil)
 	if len(cdnServers) != 0 {
 		t.Fatalf("невалидный эндпоинт посчитан в n: %v", cdnServers)
 	}
@@ -277,7 +277,7 @@ func TestUnreachableNodeDoesNotBreakFeed(t *testing.T) {
 	}
 
 	lines, cdnServers := svc.buildGroupedFeedLinesWithEndpoints(
-		items, cdnEndpointsFor("lt-main-1", "ar-main-1"), nil, nil)
+		items, cdnEndpointsFor("lt-main-1", "ar-main-1"), nil, nil, nil)
 
 	if len(cdnServers) != 2 {
 		t.Fatalf("n=%d, ожидалось 2", len(cdnServers))
@@ -340,7 +340,7 @@ func TestLargeTrafficValuesDoNotOverflow(t *testing.T) {
 
 func TestCDNTotalBytesNoOverflowOnRealisticNodeCounts(t *testing.T) {
 	// Реальный потолок — десятки нод. Проверяем с запасом на три порядка.
-	if got := cdnTotalBytes(10_000); got != 100_000_000_000_000 {
+	if got := cdnTotalBytes(10_000); got != 107_374_182_400_000 {
 		t.Fatalf("total для 10000 узлов = %d", got)
 	}
 	if cdnTotalBytes(10_000) < 0 {
@@ -366,7 +366,7 @@ func TestSubscriptionUserinfoTotalMatchesNodeCount(t *testing.T) {
 	writeSubscriptionHeaders(rec, res)
 
 	got := rec.Header().Get("Subscription-Userinfo")
-	want := "upload=1234567; download=7654321; total=30000000000; expire=1798761540"
+	want := "upload=1234567; download=7654321; total=32212254720; expire=1798761540"
 	if got != want {
 		t.Fatalf("subscription-userinfo:\n получено %q\n ожидалось %q", got, want)
 	}
@@ -494,8 +494,11 @@ func TestDisplayVolumeIsIndependentFromEnforcementLimit(t *testing.T) {
 	if cdnDisplayBytesPerNode == defaultCDNQuotaLimitBytes {
 		t.Fatal("витрина совпала с лимитом принуждения — проверьте, что это осознанное решение")
 	}
-	if cdnDisplayBytesPerNode != 10_000_000_000 {
-		t.Fatalf("витрина = %d, задание требует 10 GB на узел", cdnDisplayBytesPerNode)
+	// Двоичные единицы: Happ делит байты на 1024^3 и подписывает результат
+	// как «GB». При десятичном 10^10 на экране получалось 9,31 — проверено
+	// на живом клиенте. 10 x 1024^3 даёт ровно «10 GB».
+	if cdnDisplayBytesPerNode != 10_737_418_240 {
+		t.Fatalf("витрина = %d, ожидалось 10 GiB на узел", cdnDisplayBytesPerNode)
 	}
 	if defaultCDNQuotaLimitBytes != 20_000_000_000 {
 		t.Fatalf("лимит квоты = %d, ожидалось 20 GB (изменение тарифа запрещено)",

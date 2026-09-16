@@ -246,6 +246,12 @@ services:
       SUBSCRIPTION_RENEW_URL: ${SUBSCRIPTION_RENEW_URL:-https://t.me/vpn_house_bot}
       GRPC_CONFIG_ENABLED: ${GRPC_CONFIG_ENABLED:-false}
       HYSTERIA_CONFIG_ENABLED: ${HYSTERIA_CONFIG_ENABLED:-false}
+      # Рубильник Reality. По умолчанию true, а не false как у остальных:
+      # у Reality нет env-фолбэка, эндпоинты берутся только из таблицы
+      # vpn_reality_endpoints, и пустая таблица сама означает «не настроен».
+      # Переменная нужна, чтобы выключить транспорт при инциденте без
+      # отката кода.
+      REALITY_CONFIG_ENABLED: ${REALITY_CONFIG_ENABLED:-true}
       HYSTERIA_ADDRESS: ${HYSTERIA_ADDRESS:-}
       HYSTERIA_PORT: ${HYSTERIA_PORT:-443}
       HYSTERIA_SNI: ${HYSTERIA_SNI:-}

@@ -300,9 +300,9 @@ func buildCDNProfile(base kafkacontracts.VPNNodeUserProfile, serverKey string, c
 // CDN-квота пользователя на этом узле исчерпана: иначе ближайший reconcile
 // вернул бы отключённую учётку обратно. На путь ОТЗЫВА этот флаг не подаётся —
 // снимать надо в том числе и CDN-учётку.
-func (s *Service) buildUserProfiles(base kafkacontracts.VPNNodeUserProfile, serverKey string, cdnEndpoints []CDNEndpoint, grpcEndpoints []GRPCEndpoint, skipCDN bool) []kafkacontracts.VPNNodeUserProfile {
-	seen := make(map[string]struct{}, 3)
-	out := make([]kafkacontracts.VPNNodeUserProfile, 0, 3)
+func (s *Service) buildUserProfiles(base kafkacontracts.VPNNodeUserProfile, serverKey string, cdnEndpoints []CDNEndpoint, grpcEndpoints []GRPCEndpoint, realityEndpoints []RealityEndpoint, skipCDN bool) []kafkacontracts.VPNNodeUserProfile {
+	seen := make(map[string]struct{}, 4)
+	out := make([]kafkacontracts.VPNNodeUserProfile, 0, 4)
 	add := func(p kafkacontracts.VPNNodeUserProfile) {
 		key := p.InboundTag + "|" + p.Email
 		if _, ok := seen[key]; ok {
@@ -334,6 +334,20 @@ func (s *Service) buildUserProfiles(base kafkacontracts.VPNNodeUserProfile, serv
 		add(grpcProfile)
 	}
 
+	// Reality: отдельный inbound на своём порту, мимо nginx. Optional=true —
+	// на узлах, где инбаунд ещё не поднят, агент пропустит профиль и не
+	// провалит всю команду синхронизации.
+	if endpoint, ok := selectRealityForServer(realityEndpoints, serverKey); ok {
+		realityInbound := endpoint.InboundTag
+		if realityInbound == "" {
+			realityInbound = "vless-reality-in"
+		}
+		realityProfile := base
+		realityProfile.InboundTag = realityInbound
+		realityProfile.Optional = true
+		add(realityProfile)
+	}
+
 	return out
 }
 
@@ -358,6 +372,7 @@ func (s *Service) publishSyncCommands(ctx context.Context, tx pgx.Tx, access *Ac
 	// он получит. Разъезд здесь = ссылка есть, а UUID на узле не заведён.
 	cdnEndpoints := s.loadCDNEndpoints(ctx)
 	grpcEndpoints := s.loadGRPCEndpoints(ctx)
+	realityEndpoints := s.loadRealityEndpoints(ctx)
 
 	// Узлы, где CDN-квота пользователя исчерпана: их CDN-профиль в желаемое
 	// состояние не попадает, поэтому reconcile не возвращает отключённый доступ.
@@ -388,7 +403,7 @@ func (s *Service) publishSyncCommands(ctx context.Context, tx pgx.Tx, access *Ac
 				Level:       item.PoolItem.Level,
 				AccessUntil: access.AccessUntil,
 			}
-			profiles = append(profiles, s.buildUserProfiles(base, item.PoolItem.ServerKey, cdnEndpoints, grpcEndpoints, skipCDN)...)
+			profiles = append(profiles, s.buildUserProfiles(base, item.PoolItem.ServerKey, cdnEndpoints, grpcEndpoints, realityEndpoints, skipCDN)...)
 		}
 
 		cmd := kafkacontracts.NodeSyncUserCommand{
@@ -440,6 +455,7 @@ func (s *Service) publishRevokeCommands(ctx context.Context, tx pgx.Tx, telegram
 	// активный UUID после потери доступа.
 	revokeCDNEndpoints := s.loadCDNEndpoints(ctx)
 	revokeGRPCEndpoints := s.loadGRPCEndpoints(ctx)
+	revokeRealityEndpoints := s.loadRealityEndpoints(ctx)
 
 	for nodeID, nodeCreds := range byNode {
 		profiles := make([]kafkacontracts.VPNNodeUserProfile, 0, len(nodeCreds)*2)
@@ -452,7 +468,7 @@ func (s *Service) publishRevokeCommands(ctx context.Context, tx pgx.Tx, telegram
 			}
 			// Отзыв: CDN-профиль включаем всегда (skipCDN=false) — иначе на узле
 			// осталась бы активная CDN-учётка отозванного пользователя.
-			profiles = append(profiles, s.buildUserProfiles(base, cred.ServerKey, revokeCDNEndpoints, revokeGRPCEndpoints, false)...)
+			profiles = append(profiles, s.buildUserProfiles(base, cred.ServerKey, revokeCDNEndpoints, revokeGRPCEndpoints, revokeRealityEndpoints, false)...)
 		}
 
 		cmd := kafkacontracts.NodeRevokeUserCommand{
