@@ -266,20 +266,18 @@ func TestGeoRulesReachDirectListWhenEnabled(t *testing.T) {
 	}
 
 	xray := decodeXray(t, compileXrayRoutingB64(ruManifest(true)))
-	var direct *xrayRoutingRule
-	for i := range xray.Rules {
-		if xray.Rules[i].OutboundTag == "direct" {
-			direct = &xray.Rules[i]
+	var domains, ips []string
+	for _, r := range xray.Rules {
+		if r.OutboundTag == "direct" {
+			domains = append(domains, r.Domain...)
+			ips = append(ips, r.IP...)
 		}
 	}
-	if direct == nil {
-		t.Fatal("правило direct отсутствует в роутинге Xray")
+	if !containsString(domains, "geosite:category-ru") {
+		t.Errorf("geosite:category-ru не попал в domain правил direct: %v", domains)
 	}
-	if !containsString(direct.Domain, "geosite:category-ru") {
-		t.Errorf("geosite:category-ru не попал в domain правила direct: %v", direct.Domain)
-	}
-	if !containsString(direct.IP, "geoip:ru") {
-		t.Errorf("geoip:ru не попал в ip правила direct: %v", direct.IP)
+	if !containsString(ips, "geoip:ru") {
+		t.Errorf("geoip:ru не попал в ip правил direct: %v", ips)
 	}
 }
 
@@ -341,10 +339,11 @@ func TestXrayRuleOrder(t *testing.T) {
 	m.ProxyDomains = []string{"domain:youtube.com"}
 
 	xray := decodeXray(t, compileXrayRoutingB64(m))
-	if len(xray.Rules) != 3 {
-		t.Fatalf("ожидалось 3 правила, получено %d", len(xray.Rules))
+	// direct идёт двумя правилами: домены и IP отдельно (см. appendXrayRules).
+	want := []string{"block", "proxy", "direct", "direct"}
+	if len(xray.Rules) != len(want) {
+		t.Fatalf("ожидалось %d правила, получено %d", len(want), len(xray.Rules))
 	}
-	want := []string{"block", "proxy", "direct"}
 	for i, tag := range want {
 		if xray.Rules[i].OutboundTag != tag {
 			t.Errorf("правило %d имеет outboundTag %q, ожидалось %q", i, xray.Rules[i].OutboundTag, tag)
@@ -366,20 +365,23 @@ func TestEmptyManifestCompilesToNothing(t *testing.T) {
 	}
 }
 
-// happValue срезает только domain:, потому что для Xray это эквивалентная
-// запись. Любой другой префикс срезать нельзя: regexp: без префикса перестаёт
-// быть регуляркой и правило молча перестаёт совпадать.
-func TestHappValueKeepsMeaningfulPrefixes(t *testing.T) {
-	tests := map[string]string{
-		"domain:vk.com":       "vk.com",
-		"regexp:.*\\.ru$":     "regexp:.*\\.ru$",
-		"geosite:category-ru": "geosite:category-ru",
-		"full:ya.ru":          "full:ya.ru",
-		"ext:geosite.dat:ru":  "ext:geosite.dat:ru",
+// Префиксы Xray срезать нельзя ни одни: regexp: без префикса перестаёт быть
+// регуляркой, а domain: без префикса превращается в поиск подстроки.
+func TestHappValuesKeepMeaningfulPrefixes(t *testing.T) {
+	in := []string{
+		"domain:vk.com",
+		"regexp:.*\\.ru$",
+		"geosite:category-ru",
+		"full:ya.ru",
+		"ext:geosite.dat:ru",
 	}
-	for in, want := range tests {
-		if got := happValue(in); got != want {
-			t.Errorf("happValue(%q) = %q, ожидалось %q", in, got, want)
+	got := happValues(in)
+	if len(got) != len(in) {
+		t.Fatalf("получено %d значений, ожидалось %d: %v", len(got), len(in), got)
+	}
+	for i := range in {
+		if got[i] != in[i] {
+			t.Errorf("happValues изменил %q на %q", in[i], got[i])
 		}
 	}
 }

@@ -18,9 +18,10 @@ import (
 //   clientGroupHapp — Happ, Incy      → Happ-профиль (DirectSites/DirectIp/...)
 //   clientGroupXray — v2RayTun, Streisand → Xray-JSON (rules[] с outboundTag)
 //
-// Обе доставляются заголовком `routing` (base64). Для Happ/Incy дополнительно
-// кладём deeplink в тело подписки — он даёт АВТО-АКТИВАЦИЮ профиля (.../onadd/),
-// то есть пользователю не нужно ничего включать руками.
+// Xray-JSON доставляется заголовком `routing` (base64). Профиль Happ/Incy —
+// deeplink'ом в теле подписки (.../onadd/): он даёт АВТО-АКТИВАЦИЮ профиля,
+// то есть пользователю не нужно ничего включать руками. В заголовок профиль
+// Happ/Incy не дублируется — см. routingHeaderPayload.
 // ============================================================================
 
 type clientGroup string
@@ -139,20 +140,7 @@ func compileXrayRoutingB64(m *RoutingManifest) string {
 		return ""
 	}
 
-	rules := make([]xrayRoutingRule, 0, 4)
-
-	if len(m.BlockDomains) > 0 {
-		rules = append(rules, xrayRoutingRule{
-			Type: "field", OutboundTag: "block", Name: "Block",
-			Domain: m.BlockDomains,
-		})
-	}
-	if len(m.ProxyDomains) > 0 || len(m.ProxyIPs) > 0 {
-		rules = append(rules, xrayRoutingRule{
-			Type: "field", OutboundTag: "proxy", Name: "Force proxy",
-			Domain: m.ProxyDomains, IP: m.ProxyIPs,
-		})
-	}
+	rules := make([]xrayRoutingRule, 0, 6)
 
 	directDomains := append([]string{}, m.DirectDomains...)
 	directIPs := append([]string{}, m.DirectIPs...)
@@ -160,12 +148,10 @@ func compileXrayRoutingB64(m *RoutingManifest) string {
 		directDomains = append(directDomains, m.GeoRules.DirectSites...)
 		directIPs = append(directIPs, m.GeoRules.DirectIPs...)
 	}
-	if len(directDomains) > 0 || len(directIPs) > 0 {
-		rules = append(rules, xrayRoutingRule{
-			Type: "field", OutboundTag: "direct", Name: "Direct Russia",
-			Domain: directDomains, IP: directIPs,
-		})
-	}
+
+	rules = appendXrayRules(rules, "block", "Block", m.BlockDomains, nil)
+	rules = appendXrayRules(rules, "proxy", "Force proxy", m.ProxyDomains, m.ProxyIPs)
+	rules = appendXrayRules(rules, "direct", "Direct", directDomains, directIPs)
 	if len(rules) == 0 {
 		return ""
 	}
@@ -192,6 +178,29 @@ func compileXrayRoutingB64(m *RoutingManifest) string {
 		return ""
 	}
 	return base64.StdEncoding.EncodeToString(buf)
+}
+
+// appendXrayRules добавляет к правилам Xray отдельное правило для доменов и
+// отдельное — для IP.
+//
+// В Xray все условия одного правила должны выполниться ОДНОВРЕМЕННО. Правило
+// с domain и ip сразу совпадает только с соединением, у которого подходят и
+// имя, и адрес. При domainStrategy AsIs адрес у доменного запроса неизвестен,
+// поэтому такое правило не срабатывает никогда: прежнее «Direct Russia» со
+// списком доменов и частными сетями в одном объекте не отправляло напрямую
+// ни один домен — весь трафик v2RayTun и Streisand шёл через VPN.
+func appendXrayRules(rules []xrayRoutingRule, tag, name string, domains, ips []string) []xrayRoutingRule {
+	if len(domains) > 0 {
+		rules = append(rules, xrayRoutingRule{
+			Type: "field", OutboundTag: tag, Name: name, Domain: domains,
+		})
+	}
+	if len(ips) > 0 {
+		rules = append(rules, xrayRoutingRule{
+			Type: "field", OutboundTag: tag, Name: name + " IP", IP: ips,
+		})
+	}
+	return rules
 }
 
 // ---------------------------------------------------------------------------
@@ -235,23 +244,19 @@ type happRouting struct {
 	FakeDNS        string `json:"FakeDNS"`
 }
 
-// happValue нормализует значение для Happ-профиля.
+// happValues готовит список значений для Happ-профиля: обрезает пробелы и
+// пропускает пустые строки. Сами значения не меняются.
 //
 // Happ передаёт значения в Xray-ядро как есть — это видно по официальному
 // примеру из документации, где в DirectSites стоит "geosite:ru" с префиксом.
-// Поэтому Xray-префиксы НЕЛЬЗЯ срезать: без "regexp:" регулярка превращается
-// в обычную доменную строку и правило перестаёт совпадать с чем-либо.
+// Поэтому префиксы Xray срезать НЕЛЬЗЯ, и "domain:" — не исключение.
 //
-// Срезаем только "domain:" — в Xray он семантически эквивалентен записи без
-// префикса (совпадение по домену и поддоменам), так что запись становится
-// короче без изменения поведения.
-func happValue(v string) string {
-	if strings.HasPrefix(v, "domain:") {
-		return strings.TrimPrefix(v, "domain:")
-	}
-	return v
-}
-
+// В Xray (infra/conf/router.go, parseDomainRule) запись без префикса — это
+// Domain_Plain, поиск ПОДСТРОКИ, как у "keyword:". А "domain:" — это
+// Domain_Domain: сам домен и его поддомены. Раньше префикс срезался, и
+// правило "domain:hh.ru" превращалось в "hh.ru", которое совпадает и с
+// ahh.ru, и с hh.ru.example.com. Для списка исключений «напрямую» это
+// недопустимо: чужие сайты уходили бы мимо VPN.
 func happValues(in []string) []string {
 	out := make([]string, 0, len(in))
 	for _, v := range in {
@@ -259,7 +264,7 @@ func happValues(in []string) []string {
 		if v == "" {
 			continue
 		}
-		out = append(out, happValue(v))
+		out = append(out, v)
 	}
 	return out
 }
@@ -362,6 +367,24 @@ func stableRoutingID(seed string) string {
 	sum := sha1.Sum([]byte("house-vpn-routing:" + seed))
 	h := hex.EncodeToString(sum[:])
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+}
+
+// routingHeaderPayload возвращает значение заголовка `routing` для группы
+// клиентов.
+//
+// Happ и Incy получают профиль в теле подписки deeplink'ом .../onadd/
+// (routingBodyLines) — оба клиента документируют этот способ, и именно он
+// включает авто-активацию. Дублировать тот же профиль в заголовке незачем и
+// вредно: список прямых исключений занимает килобайты, а заголовки ответа
+// упираются в буфер прокси перед сервисом (у nginx по умолчанию 4–8 КБ) —
+// при переполнении подписка целиком отдаёт 502.
+//
+// v2RayTun и Streisand читают роутинг только из заголовка — им он остаётся.
+func routingHeaderPayload(group clientGroup, xrayB64 string) string {
+	if group == clientGroupHapp {
+		return ""
+	}
+	return xrayB64
 }
 
 // routingBodyLines возвращает строки, которые надо добавить В ТЕЛО подписки

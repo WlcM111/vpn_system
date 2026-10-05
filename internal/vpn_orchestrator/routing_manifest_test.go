@@ -182,26 +182,28 @@ func TestCompileHappRouting(t *testing.T) {
 	})
 }
 
-func TestHappValue(t *testing.T) {
+func TestHappValuesKeepPrefixes(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
 		want string
 	}{
-		// domain: в Xray эквивалентен записи без префикса — срезаем.
-		{"domain: срезается", "domain:example.ru", "example.ru"},
-		// А regexp: несёт смысл и обязан остаться.
+		// domain: обязан остаться: без него Xray ищет подстроку, и правило
+		// "hh.ru" совпало бы с ahh.ru.
+		{"domain: сохраняется", "domain:example.ru", "domain:example.ru"},
 		{"regexp: сохраняется", "regexp:.*\\.ru$", "regexp:.*\\.ru$"},
 		{"geosite: сохраняется", "geosite:category-ru", "geosite:category-ru"},
 		{"geoip: сохраняется", "geoip:private", "geoip:private"},
 		{"без префикса не меняется", "example.ru", "example.ru"},
 		{"CIDR не меняется", "10.0.0.0/8", "10.0.0.0/8"},
+		{"пробелы по краям обрезаются", "  domain:example.ru ", "domain:example.ru"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := happValue(tt.in); got != tt.want {
-				t.Errorf("happValue(%q) = %q, ожидалось %q", tt.in, got, tt.want)
+			got := happValues([]string{tt.in})
+			if len(got) != 1 || got[0] != tt.want {
+				t.Errorf("happValues(%q) = %v, ожидалось [%q]", tt.in, got, tt.want)
 			}
 		})
 	}
@@ -212,8 +214,8 @@ func TestHappValuesSkipsEmpty(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("получено %d значений (%v), ожидалось 2", len(got), got)
 	}
-	if got[0] != "a.ru" || got[1] != "b.ru" {
-		t.Errorf("значения = %v, ожидалось [a.ru b.ru]", got)
+	if got[0] != "domain:a.ru" || got[1] != "b.ru" {
+		t.Errorf("значения = %v, ожидалось [domain:a.ru b.ru]", got)
 	}
 }
 

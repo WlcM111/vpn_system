@@ -61,7 +61,9 @@ type SubscriptionFeedResult struct {
 	CDNNodes int
 
 	// RoutingB64 — payload для заголовка `routing` (base64). Пустая строка
-	// означает «роутинг не отдаём» (fail-open).
+	// означает «заголовок не ставим»: роутинг не настроен (fail-open) либо
+	// клиент получает его в теле подписки (Happ/Incy, см.
+	// routingHeaderPayload).
 	RoutingB64 string
 }
 
@@ -130,10 +132,7 @@ func (s *Service) RenderSubscriptionFeedDetailed(ctx context.Context, token stri
 	// Сплит-роутинг: манифест компилируется под формат клиента.
 	// Fail-open — при любой проблеме строки пустые и всё работает как раньше.
 	xrayB64, happB64 := globalRoutingCache.load()
-	routingB64 := xrayB64
-	if group == clientGroupHapp {
-		routingB64 = happB64
-	}
+	routingB64 := routingHeaderPayload(group, xrayB64)
 
 	// Для Happ/Incy роутинг дополнительно кладём в тело подписки deeplink'ом
 	// с авто-активацией (.../onadd/) — так профиль применяется без действий
