@@ -343,6 +343,12 @@ func (s *Service) buildUserProfiles(base kafkacontracts.VPNNodeUserProfile, serv
 		}
 		realityProfile := base
 		realityProfile.InboundTag = realityInbound
+		// flow учётки на узле обязан совпадать с flow в ссылке, которую
+		// BuildRealityVLESSURLFromEndpoint собирает из этого же эндпоинта. base
+		// несёт flow основного профиля (у WS он пустой), а Xray при расхождении
+		// отвергает подключение: "account … is not able to use the flow
+		// xtls-rprx-vision".
+		realityProfile.Flow = strings.TrimSpace(endpoint.Flow)
 		realityProfile.Optional = true
 		add(realityProfile)
 	}
