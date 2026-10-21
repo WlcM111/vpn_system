@@ -29,10 +29,12 @@ type AdminGRPCEndpointRequest struct {
 	Remarks     string `json:"remarks,omitempty"`
 }
 
-// ListEnabledGRPCEndpoints возвращает все включённые gRPC-эндпоинты,
-// отсортированные по sort_order, id. Привязанные и глобальные — вперемешку;
-// выбор конкретного делает selectGRPCForServer.
-func (r *Repository) ListEnabledGRPCEndpoints(ctx context.Context) ([]GRPCEndpoint, error) {
+// ListGRPCEndpoints возвращает все gRPC-эндпоинты, включая выключенные,
+// отсортированные по sort_order, id. Выключенные строки нужны загрузчику: по
+// ним он отличает «gRPC выключен на сервере» от «таблица пуста» (см.
+// grpcEndpointsForIssue). Привязанные и глобальные — вперемешку; выбор
+// конкретного делает selectGRPCForServer.
+func (r *Repository) ListGRPCEndpoints(ctx context.Context) ([]GRPCEndpoint, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -41,7 +43,6 @@ func (r *Repository) ListEnabledGRPCEndpoints(ctx context.Context) ([]GRPCEndpoi
 			grpc_key, COALESCE(server_key, ''), enabled, sort_order, inbound_tag,
 			address, server_name, host, port, service_name, mode, fingerprint, alpn, remarks
 		FROM vpn_grpc_endpoints
-		WHERE enabled = TRUE
 		ORDER BY sort_order, id
 	`)
 	if err != nil {

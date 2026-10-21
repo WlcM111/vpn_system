@@ -119,3 +119,87 @@ func TestGRPCConfigEnabled(t *testing.T) {
 		t.Error("при GRPC_CONFIG_ENABLED=false ожидалось false")
 	}
 }
+
+// Выключенная строка таблицы выключает gRPC на своём сервере, и env-фолбэк её
+// не возвращает: он действует только для пустой таблицы.
+func TestGRPCEndpointsForIssue(t *testing.T) {
+	withEnv := func() (GRPCEndpoint, bool) {
+		return GRPCEndpoint{GRPCKey: "env", ServerKey: "lt-1", Address: "env.example", Enabled: true}, true
+	}
+	noEnv := func() (GRPCEndpoint, bool) { return GRPCEndpoint{}, false }
+
+	lt := GRPCEndpoint{GRPCKey: "lt", ServerKey: "lt-1", Address: "lt.example", Enabled: true}
+	de := GRPCEndpoint{GRPCKey: "de", ServerKey: "de-1", Address: "de.example", Enabled: true}
+	ltOff, deOff := lt, de
+	ltOff.Enabled = false
+	deOff.Enabled = false
+
+	tests := []struct {
+		name    string
+		rows    []GRPCEndpoint
+		fromEnv func() (GRPCEndpoint, bool)
+		want    []string
+	}{
+		{"все строки выключены — gRPC нет, окружение его не возвращает", []GRPCEndpoint{ltOff, deOff}, withEnv, nil},
+		{"выключен один сервер — второй остаётся", []GRPCEndpoint{ltOff, de}, withEnv, []string{"de"}},
+		{"все строки включены", []GRPCEndpoint{lt, de}, withEnv, []string{"lt", "de"}},
+		{"пустая таблица — работает env-фолбэк", nil, withEnv, []string{"env"}},
+		{"пустая таблица без окружения — gRPC нет", nil, noEnv, nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := grpcEndpointsForIssue(tt.rows, tt.fromEnv)
+			keys := make([]string, 0, len(got))
+			for _, e := range got {
+				keys = append(keys, e.GRPCKey)
+			}
+			if strings.Join(keys, ",") != strings.Join(tt.want, ",") {
+				t.Fatalf("к выдаче %v, ожидалось %v", keys, tt.want)
+			}
+		})
+	}
+}
+
+// Выключенная строка убирает gRPC сразу из обоих мест выдачи: из подписки и из
+// желаемого состояния узла. Включённая возвращает его без правки кода. Эндпоинт
+// окружения привязан к тому же серверу — самый опасный случай для фолбэка.
+func TestDisabledGRPCEndpointIsNotIssued(t *testing.T) {
+	svc := &Service{}
+	items := []FeedItem{{
+		PoolItem:   PoolItem{ItemKey: "lt", ServerKey: "lt-main-1"},
+		Credential: UserCredential{VLESSUUID: "uuid-1"},
+		URL:        "vless://uuid-1@lt.race-src.com:443#LT",
+	}}
+	fromEnv := func() (GRPCEndpoint, bool) {
+		return GRPCEndpoint{GRPCKey: "env", ServerKey: "lt-main-1", Address: "race-src.com", Enabled: true}, true
+	}
+	row := GRPCEndpoint{
+		GRPCKey: "lt-grpc", ServerKey: "lt-main-1", Enabled: true,
+		InboundTag: "vless-grpc-cdn-in", Address: "race-src.com",
+	}
+
+	issued := func(rows []GRPCEndpoint) (inFeed, onNode bool) {
+		endpoints := grpcEndpointsForIssue(rows, fromEnv)
+		lines, _ := svc.buildGroupedFeedLinesWithEndpoints(items, nil, endpoints, nil, nil)
+		for _, l := range lines {
+			if strings.Contains(l, "type=grpc") {
+				inFeed = true
+			}
+		}
+		for _, p := range svc.buildUserProfiles(baseProfile(), "lt-main-1", nil, endpoints, nil, false) {
+			if p.InboundTag == "vless-grpc-cdn-in" {
+				onNode = true
+			}
+		}
+		return inFeed, onNode
+	}
+
+	if inFeed, onNode := issued([]GRPCEndpoint{row}); !inFeed || !onNode {
+		t.Fatalf("включённая строка: ссылка в подписке %v, учётка на узле %v — ожидалось и то и другое", inFeed, onNode)
+	}
+	row.Enabled = false
+	if inFeed, onNode := issued([]GRPCEndpoint{row}); inFeed || onNode {
+		t.Fatalf("выключенная строка: ссылка в подписке %v, учётка на узле %v — gRPC выдаваться не должен", inFeed, onNode)
+	}
+}
