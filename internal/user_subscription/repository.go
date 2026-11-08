@@ -628,6 +628,45 @@ func (r *Repository) FindExpiredForSweep(ctx context.Context, plainMargin, renew
 	return out, rows.Err()
 }
 
+// LockSweepCandidateTx повторно проверяет кандидата sweep-воркера под
+// блокировкой строки — в той же транзакции, которая отзовёт доступ.
+//
+// FindExpiredForSweep выбирает кандидатов вне транзакции (блокировка снимается
+// сразу после запроса), а отзыв выполняется позже, по одному. Если между
+// выборкой и отзывом пользователь оплатил подписку, без этой проверки
+// MarkSuspendedTx обрезал бы только что оплаченный срок до now() (дефект D5).
+// Возвращает текущий статус и признак «всё ещё подлежит отзыву».
+func (r *Repository) LockSweepCandidateTx(ctx context.Context, tx pgx.Tx, telegramID int64, plainMargin, renewMargin time.Duration) (string, bool, error) {
+	var status string
+	err := tx.QueryRow(ctx, `
+		SELECT status
+		FROM user_subscriptions
+		WHERE telegram_id = $1
+		  AND (
+		        (
+		          status IN ('trial', 'active')
+		          AND expires_at IS NOT NULL
+		          AND expires_at <= now() - (
+		                CASE WHEN auto_renew_enabled THEN $3::interval ELSE $2::interval END
+		              )
+		        )
+		     OR (
+		          status = 'grace'
+		          AND grace_until IS NOT NULL
+		          AND grace_until <= now() - $2::interval
+		        )
+		      )
+		FOR UPDATE
+	`, telegramID, plainMargin.String(), renewMargin.String()).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("lock sweep candidate: %w", err)
+	}
+	return status, true, nil
+}
+
 func (r *Repository) MarkSuspendedTx(ctx context.Context, tx pgx.Tx, telegramID int64, country, reason string) (*SubscriptionState, error) {
 	if err := r.ensureUserAndStateTx(ctx, tx, telegramID, country); err != nil {
 		return nil, err

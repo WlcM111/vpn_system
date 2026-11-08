@@ -34,6 +34,16 @@ jobs:
         run: |
           chmod +x scripts/check_sql.sh
           ./scripts/check_sql.sh
+  scripts:
+    name: Скрипт настройки Platega
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # docker compose и python3 на ubuntu-latest есть: сценарии с проверкой
+      # настоящим парсером Compose выполняются, а не пропускаются.
+      - name: Тесты scripts/setup_platega_env.sh
+        run: bash scripts/tests/setup_platega_env_test.sh
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

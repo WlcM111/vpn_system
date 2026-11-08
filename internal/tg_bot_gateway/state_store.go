@@ -3,6 +3,7 @@ package tg_bot_gateway
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 type Step string
@@ -18,11 +19,23 @@ const (
 	StepServicesMenu              Step = "services_menu"
 	StepReferralMenu              Step = "referral_menu"
 	StepClientChoice              Step = "client_choice"
+	// StepPaymentMethod — тариф выбран, ждём выбор способа оплаты.
+	StepPaymentMethod Step = "payment_method"
 )
 
 type ChatState struct {
 	Step         Step `json:"step"`
 	WelcomeShown bool `json:"welcome_shown"`
+
+	// PendingPlan — тариф, выбранный перед выбором способа оплаты, и когда он
+	// выбран. Выбор старше pendingPlanTTL считается устаревшим.
+	PendingPlan   string     `json:"pending_plan,omitempty"`
+	PendingPlanAt *time.Time `json:"pending_plan_at,omitempty"`
+
+	// LastCheckoutKey/LastCheckoutAt — последний отправленный запрос счёта
+	// («тариф:провайдер»): защита от повторных нажатий подряд.
+	LastCheckoutKey string     `json:"last_checkout_key,omitempty"`
+	LastCheckoutAt  *time.Time `json:"last_checkout_at,omitempty"`
 }
 
 type StateStore interface {

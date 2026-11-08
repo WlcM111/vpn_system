@@ -53,22 +53,22 @@ const reconcileLockKey int64 = 776644221100
 
 func (s *Service) reconcileOnce(ctx context.Context, batchSize int) {
 	// advisory-lock: одна реплика за раз. pg_try_advisory_lock не блокирует —
-	// если лок занят другой репликой, просто пропускаем проход.
-	var locked bool
-	if err := s.repo.TryAdvisoryLock(ctx, reconcileLockKey, &locked); err != nil {
+	// если лок занят другой репликой, просто пропускаем проход. Лок берётся и
+	// снимается на одном соединении (см. Repository.WithAdvisoryLock).
+	ran, err := s.repo.WithAdvisoryLock(ctx, reconcileLockKey, func(ctx context.Context) {
+		s.reconcileLocked(ctx, batchSize)
+	})
+	if err != nil {
 		slog.Warn("[reconcile] advisory lock check failed", "err", err)
 		return
 	}
-	if !locked {
+	if !ran {
 		slog.Debug("[reconcile] skipped: lock held by another instance")
-		return
 	}
-	defer func() {
-		if err := s.repo.AdvisoryUnlock(ctx, reconcileLockKey); err != nil {
-			slog.Warn("[reconcile] advisory unlock failed", "err", err)
-		}
-	}()
+}
 
+// reconcileLocked — сам проход reconcile; вызывается под advisory-lock.
+func (s *Service) reconcileLocked(ctx context.Context, batchSize int) {
 	var (
 		after   int64
 		total   int

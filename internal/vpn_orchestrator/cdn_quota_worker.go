@@ -60,22 +60,12 @@ func (s *Service) RunCDNQuotaWorker(ctx context.Context, interval time.Duration,
 }
 
 func (s *Service) cdnQuotaPassOnce(ctx context.Context, batchSize int) {
-	var locked bool
-	if err := s.repo.TryAdvisoryLock(ctx, cdnQuotaLockKey, &locked); err != nil {
+	if _, err := s.repo.WithAdvisoryLock(ctx, cdnQuotaLockKey, func(ctx context.Context) {
+		s.runCalendarReset(ctx, batchSize)
+		s.exportQuotaMetrics(ctx)
+	}); err != nil {
 		slog.Warn("[cdn-quota] advisory lock check failed", "err", err)
-		return
 	}
-	if !locked {
-		return
-	}
-	defer func() {
-		if err := s.repo.AdvisoryUnlock(ctx, cdnQuotaLockKey); err != nil {
-			slog.Warn("[cdn-quota] advisory unlock failed", "err", err)
-		}
-	}()
-
-	s.runCalendarReset(ctx, batchSize)
-	s.exportQuotaMetrics(ctx)
 }
 
 // runCalendarReset переводит все отставшие строки в текущий календарный период.

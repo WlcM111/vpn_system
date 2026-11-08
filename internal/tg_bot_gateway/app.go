@@ -30,8 +30,11 @@ type App struct {
 
 	kafkaProducer     *commonkafka.Producer
 	notificationsRead *kafkago.Reader
-	chatLocks         sync.Map
-	stopOnce          sync.Once
+	// billingPublisher — подмена отправки команд в billing (тесты); nil —
+	// отправка через kafkaProducer.
+	billingPublisher jsonPublisher
+	chatLocks        sync.Map
+	stopOnce         sync.Once
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -40,6 +43,11 @@ type App struct {
 	documents *documentsStore
 
 	referralUsersPerMonth int // N приглашённых на 1 месяц (для показа на экране)
+}
+
+// jsonPublisher — отправка JSON-сообщения в топик Kafka.
+type jsonPublisher interface {
+	PublishJSON(ctx context.Context, topic, key string, v any) error
 }
 
 type chatLock struct {
@@ -208,12 +216,17 @@ func (a *App) Run() error {
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
+	u.AllowedUpdates = []string{"message", "callback_query"}
 
 	updates := a.bot.GetUpdatesChan(u)
 
 	for {
 		select {
 		case update := <-updates:
+			if update.CallbackQuery != nil {
+				a.handleCallbackQuery(update.CallbackQuery)
+				continue
+			}
 			if update.Message == nil {
 				continue
 			}
@@ -284,6 +297,9 @@ func (a *App) runWebhookMode(webhookURL string) error {
 			return
 		}
 
+		if update.CallbackQuery != nil {
+			a.handleCallbackQuery(update.CallbackQuery)
+		}
 		if update.Message != nil {
 			a.handleUpdate(a.ctx, update)
 		}
@@ -325,7 +341,7 @@ func (a *App) setTelegramWebhook(ctx context.Context, webhookURL string, secret 
 	payload := map[string]any{
 		"url":                  webhookURL,
 		"drop_pending_updates": true,
-		"allowed_updates":      []string{"message"},
+		"allowed_updates":      []string{"message", "callback_query"},
 	}
 
 	if secret != "" {

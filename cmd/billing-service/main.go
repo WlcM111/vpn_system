@@ -99,6 +99,7 @@ func main() {
 	go billing.RunRenewalScheduler(ctx, svc)
 	go billing.RunGraceExpirationWorker(ctx, svc)
 	go billing.RunRefundRetryWorker(ctx, svc)
+	go billing.RunPlategaReconciler(ctx, svc)
 	go outbox.RunPublisher(ctx, pool, producer, "billing-service")
 	httpserver.RegisterLivez(mux)
 	httpserver.RegisterReadyz(mux, func(ctx context.Context) error {

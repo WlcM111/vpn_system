@@ -26,6 +26,11 @@ type CreateSubscriptionCheckoutCommand struct {
 	PlanCode          PlanCode           `json:"plan_code"`
 	SavePaymentMethod bool               `json:"save_payment_method,omitempty"`
 	ReturnURL         string             `json:"return_url,omitempty"`
+	// PaymentProvider — способ оплаты, выбранный пользователем явно:
+	// "platega" («Способ 1 - рекомендуемый») или "yookassa" («Способ 2»).
+	// Пустое значение — команда старого бота, где был только YooKassa;
+	// billing трактует её как "yookassa". Другие значения отклоняются.
+	PaymentProvider BillingPaymentProvider `json:"payment_provider,omitempty"`
 }
 
 type BindCardCommand struct {

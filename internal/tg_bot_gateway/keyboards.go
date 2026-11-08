@@ -11,10 +11,13 @@ const (
 	btnBuySubscription = "💳 Купить подписку"
 	btnMySubscription  = "📦 Моя подписка"
 	btnTrial           = "✨ Пробный период"
-	btnCancelSub       = "⛔ Отменить подписку"
-	btnDownloadVPN     = "⬇️ Скачать приложение"
-	btnSupport         = "🆘 Поддержка"
-	btnMainMenu        = "🏠 Главное меню"
+	// btnCancelSub убрана из меню: автосписаний нет, отменять нечего. Текст
+	// оставлен, чтобы нажатие на кнопку из старой клавиатуры получило
+	// пояснение, а не случайное действие (см. handleRemovedButton).
+	btnCancelSub   = "⛔ Отменить подписку"
+	btnDownloadVPN = "⬇️ Скачать приложение"
+	btnSupport     = "🆘 Поддержка"
+	btnMainMenu    = "🏠 Главное меню"
 
 	// Новый раздел «Описание услуг» и кнопки документов.
 	btnServicesInfo = "📄 Описание услуг"
@@ -37,10 +40,16 @@ const (
 	btnPlanSemiannual = "💳 Подписка 180 дней"
 	btnPlanAnnual     = "💳 Подписка 360 дней"
 
-	// Привязка/отвязка карты временно скрыты из меню (константы и обработчики
-	// сохранены для будущего возврата).
+	// Привязка/отвязка карты не используются: оплата разовая, карта не
+	// сохраняется. Тексты нужны только для пояснения при нажатии на кнопку из
+	// старой клавиатуры (см. handleRemovedButton).
 	btnBindCard   = "🔗 Привязать карту"
 	btnUnbindCard = "🔓 Отвязать карту"
+
+	// Способы оплаты после выбора тарифа — ровно два, в этом порядке.
+	// Подписи заданы требованием дословно.
+	btnPayMethodPlatega  = "Способ 1 - рекомендуемый"
+	btnPayMethodYooKassa = "Способ 2"
 
 	btnBack = "⬅️ Назад"
 
@@ -104,7 +113,6 @@ func mainMenuKeyboard() tgbotapi.ReplyKeyboardMarkup {
 		),
 		tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton(btnTrial),
-			tgbotapi.NewKeyboardButton(btnCancelSub),
 		),
 		tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton(btnDownloadVPN),
@@ -144,6 +152,23 @@ func buyMenuKeyboard() tgbotapi.ReplyKeyboardMarkup {
 		tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton(labelSemiannual()),
 			tgbotapi.NewKeyboardButton(labelAnnual()),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(btnBack),
+			tgbotapi.NewKeyboardButton(btnMainMenu),
+		),
+	)
+}
+
+// paymentMethodKeyboard — выбор способа оплаты выбранного тарифа: ровно два
+// способа, первый — рекомендуемый (Platega), второй — YooKassa.
+func paymentMethodKeyboard() tgbotapi.ReplyKeyboardMarkup {
+	return tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(btnPayMethodPlatega),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(btnPayMethodYooKassa),
 		),
 		tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton(btnBack),
@@ -208,7 +233,6 @@ func mySubKeyboardWithConfig() tgbotapi.ReplyKeyboardMarkup {
 	return tgbotapi.NewReplyKeyboard(
 		tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton(btnGetConfig),
-			tgbotapi.NewKeyboardButton(btnCancelSub),
 		),
 		tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton(btnRotateToken),

@@ -27,7 +27,7 @@ output "next_steps" {
               "country_code":"${var.country_code}","public_host":"ВАШ_ДОМЕН",
               "port":443,"transport":"ws","security":"tls",
               "default_inbound_tag":"vless-ws-in","ws_path":"/ws",
-              "max_users":1000,"weight":100,"enabled":true}'
+              "max_users":400,"weight":100,"enabled":true}'
 
     4. Создай пул-айтем (/admin/pool-items) — без него нода не попадёт в выдачу
     5. Проверь heartbeat:

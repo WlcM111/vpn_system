@@ -368,19 +368,21 @@ func (r *Repository) SummarizeQuotas(ctx context.Context, staleAfter time.Durati
 	queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	stale := "interval '0'"
-	if staleAfter > 0 {
-		stale = "$1::interval"
+	// Порог передаётся всегда, а «0 = выключено» решается в самом запросе.
+	// Раньше при пороге 0 плейсхолдер заменялся литералом, но аргумент
+	// по-прежнему передавался, и pgx отвечал «expected 0 arguments, got 1»:
+	// метрики квоты не выставлялись ни разу (дефект D10).
+	if staleAfter < 0 {
+		staleAfter = 0
 	}
-
 	rows, err := r.pool.Query(queryCtx, `
 		SELECT node_id,
 		       count(*),
 		       count(*) FILTER (WHERE state = 'exhausted'),
 		       COALESCE(SUM(GREATEST(observed_bytes - baseline_bytes, 0)), 0),
 		       count(*) FILTER (
-		           WHERE `+stale+` > interval '0'
-		             AND (last_report_at IS NULL OR last_report_at < now() - `+stale+`)
+		           WHERE $1::interval > interval '0'
+		             AND (last_report_at IS NULL OR last_report_at < now() - $1::interval)
 		       )
 		FROM vpn_user_cdn_quota
 		GROUP BY node_id

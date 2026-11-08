@@ -86,39 +86,56 @@ func (s *Service) SweepExpiredSubscriptions(ctx context.Context, plainMargin, re
 		return nil
 	}
 
-	var suspended, failed int
+	var suspended, skipped, failed int
 	for _, c := range candidates {
-		if err := s.suspendExpiredOne(ctx, c); err != nil {
+		done, err := s.suspendExpiredOne(ctx, c, plainMargin, renewMargin)
+		if err != nil {
 			slog.Error("expiry sweep: suspend failed",
 				"telegram_id", c.TelegramID, "prev_status", c.Status, "err", err)
 			failed++
 			continue
 		}
+		if !done {
+			skipped++
+			continue
+		}
 		suspended++
 	}
 
-	slog.Info("[expiry-sweep] pass done", "suspended", suspended, "failed", failed)
+	slog.Info("[expiry-sweep] pass done", "suspended", suspended, "skipped", skipped, "failed", failed)
 	return nil
 }
 
 // suspendExpiredOne отзывает доступ одному пользователю в отдельной транзакции.
 // Использует тот же путь, что и биллинг при истечении grace, — новой логики
-// отзыва не вводим.
-func (s *Service) suspendExpiredOne(ctx context.Context, c ExpiredCandidate) error {
+// отзыва не вводим. Перед отзывом условие истечения проверяется заново под
+// блокировкой строки: оплата, пришедшая после выборки кандидатов, не
+// обрезается (дефект D5). false — отзывать уже не нужно.
+func (s *Service) suspendExpiredOne(ctx context.Context, c ExpiredCandidate, plainMargin, renewMargin time.Duration) (bool, error) {
 	tx, err := s.repo.BeginTx(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	status, still, err := s.repo.LockSweepCandidateTx(ctx, tx, c.TelegramID, plainMargin, renewMargin)
+	if err != nil {
+		return false, err
+	}
+	if !still {
+		slog.Info("expiry sweep: candidate no longer expired, skipped",
+			"telegram_id", c.TelegramID, "prev_status", c.Status)
+		return false, nil
+	}
+
 	reason := "subscription_expired"
-	if c.Status == string(StatusGrace) {
+	if status == string(StatusGrace) {
 		reason = "grace_period_expired"
 	}
 
 	state, err := s.repo.MarkSuspendedTx(ctx, tx, c.TelegramID, s.defaultCountry, reason)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if err := s.publishSubscriptionEventTx(ctx, tx, &kafkacontracts.SubscriptionSuspendedEvent{
@@ -128,10 +145,13 @@ func (s *Service) suspendExpiredOne(ctx context.Context, c ExpiredCandidate) err
 		Reason:      reason,
 		AccessRev:   state.AccessRev,
 	}); err != nil {
-		return err
+		return false, err
 	}
 
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // ---------------------------------------------------------------------------

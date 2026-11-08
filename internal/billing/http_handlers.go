@@ -27,6 +27,7 @@ func NewHTTPHandlers(service *Service) *HTTPHandlers {
 func (h *HTTPHandlers) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", h.handleHealthz)
 	mux.HandleFunc("/webhooks/yookassa/", h.handleYooKassaWebhook)
+	mux.HandleFunc("/webhooks/platega", h.handlePlategaWebhook)
 	mux.HandleFunc("/checkout/success", h.handleCheckoutSuccess)
 	mux.HandleFunc("/checkout/fail", h.handleCheckoutFail)
 }

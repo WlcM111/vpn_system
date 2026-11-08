@@ -71,6 +71,8 @@ func (a *App) sendKafkaNotificationToUser(n *kafkacontracts.TgNotification) erro
 			msg.ReplyMarkup = mySubKeyboardWithConfig()
 		case kafkacontracts.TgKeyboardMainMenuWithBack:
 			msg.ReplyMarkup = mainMenuWithBackKeyboard()
+		case kafkacontracts.TgKeyboardPaymentMethod:
+			msg.ReplyMarkup = paymentMethodKeyboard()
 		}
 	}
 

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"vpn-platform/internal/billing/platega"
 	commonkafka "vpn-platform/internal/common/kafka"
 	commonmetrics "vpn-platform/internal/common/metrics"
 	"vpn-platform/internal/common/outbox"
@@ -31,7 +32,15 @@ type Service struct {
 	cfg           ServiceConfig
 	plans         map[kafkacontracts.PlanCode]Plan
 	retrySchedule []time.Duration
+
+	// platega — клиент Platega; nil, если Platega не настроена.
+	platega    *platega.Client
+	plategaCfg PlategaSettings
 }
+
+// yooKassaReuseWindow — повторное нажатие «Способ 2» в течение этого времени
+// отдаёт ссылку уже созданного неоплаченного платежа на тот же тариф.
+const yooKassaReuseWindow = 10 * time.Minute
 
 type ServiceConfig struct {
 	YooKassaAPIBase string
@@ -93,9 +102,43 @@ func NewService(repo *Repository, producer *commonkafka.Producer) *Service {
 		annualPrice = "799.00"
 	}
 
+	plategaCfg, err := LoadPlategaSettings()
+	if err != nil {
+		// Значения переменных в сообщение не попадают — только их имена.
+		slog.Error("billing: Platega configuration is invalid, Platega is disabled", "err", err)
+		plategaCfg.Enabled = false
+	}
+	var plategaClient *platega.Client
+	if plategaCfg.Enabled {
+		c, err := platega.NewClient(plategaCfg.Client, &http.Client{Timeout: 15 * time.Second})
+		if err != nil {
+			slog.Error("billing: Platega client init failed, Platega is disabled", "err", err)
+			plategaCfg.Enabled = false
+		} else {
+			plategaClient = c
+			slog.Info("billing: Platega enabled",
+				"api_base", plategaCfg.Client.BaseURL,
+				"payment_method", int(plategaCfg.Client.PaymentMethod))
+		}
+	} else if err == nil {
+		log.Println("[billing] Platega is not configured (PLATEGA_MERCHANT_ID / PLATEGA_SECRET are empty); payment method 1 will report unavailability")
+	}
+	for code, price := range map[string]string{
+		string(kafkacontracts.PlanCodeMonthly):    monthlyPrice,
+		string(kafkacontracts.PlanCodeQuarterly):  quarterlyPrice,
+		string(kafkacontracts.PlanCodeSemiannual): semiannualPrice,
+		string(kafkacontracts.PlanCodeAnnual):     annualPrice,
+	} {
+		if v, err := platega.ParseDecimalMinor(price); err != nil || v <= 0 {
+			slog.Error("billing: plan price is not a valid amount in RUB (expected like 89 or 89.00)", "plan", code, "value", price)
+		}
+	}
+
 	return &Service{
-		repo:     repo,
-		producer: producer,
+		platega:    plategaClient,
+		plategaCfg: plategaCfg,
+		repo:       repo,
+		producer:   producer,
 		client: &http.Client{
 			Timeout: 15 * time.Second,
 		},
@@ -151,6 +194,47 @@ func (s *Service) HandleCreateSubscriptionCheckout(
 	if commandID == "" {
 		commandID = uuid.NewString()
 	}
+
+	// Способ оплаты выбирает пользователь; провайдер не подменяется молча.
+	provider, ok := normalizeProvider(cmd.PaymentProvider)
+	if !ok {
+		return s.rejectUnknownProvider(ctx, cmd)
+	}
+	if provider == kafkacontracts.BillingPaymentProviderPlatega {
+		return s.handleCreatePlategaCheckout(ctx, cmd, plan, commandID)
+	}
+	return s.handleCreateYooKassaCheckout(ctx, cmd, plan, commandID)
+}
+
+// handleCreateYooKassaCheckout — оплата «Способ 2» (YooKassa). Логика создания
+// платежа прежняя; добавлены переиспользование открытого платежа при
+// повторном нажатии и уведомление пользователя при ошибке создания.
+func (s *Service) handleCreateYooKassaCheckout(
+	ctx context.Context,
+	cmd *kafkacontracts.CreateSubscriptionCheckoutCommand,
+	plan Plan,
+	commandID string,
+) error {
+	if s.cfg.ShopID == "" || s.cfg.SecretKey == "" {
+		slog.Warn("yookassa checkout requested but YooKassa is not configured", "telegram_id", cmd.TelegramID)
+		return s.notifyMethodUnavailable(ctx, cmd.TelegramID, kafkacontracts.BillingPaymentProviderYooKassa)
+	}
+
+	reusedOrder, reusedURL, err := s.repo.FindReusableYooKassaPayment(ctx, cmd.TelegramID, string(plan.Code), plan.AmountValue, yooKassaReuseWindow)
+	if err != nil {
+		return err
+	}
+	if reusedURL != "" {
+		slog.Info("yookassa checkout: reusing open payment", "order_id", reusedOrder, "telegram_id", cmd.TelegramID)
+		return s.publishNotification(ctx, &kafkacontracts.TgNotification{
+			TelegramID: cmd.TelegramID,
+			Message: "💳 У вас уже есть неоплаченный платёж " + methodLabelYooKassa + " на этот тариф — новый не создавался, вот та же ссылка.\n\n" +
+				"Тариф: " + planSummary(plan.DurationDays, plan.AmountValue) + ".\n\n" +
+				"Подписка активируется автоматически, как только платёж подтвердится. Нажмите кнопку ниже 👇",
+			PayURL: reusedURL,
+		})
+	}
+
 	orderID := commandID
 	idempotenceKey := "checkout:" + commandID
 	savePaymentMethod := cmd.SavePaymentMethod
@@ -198,9 +282,11 @@ func (s *Service) HandleCreateSubscriptionCheckout(
 		Metadata:          record.Metadata,
 	}, idempotenceKey)
 	if err != nil {
-		// YooKassa недоступна по любой причине — уведомляем пользователя и
-		// прекращаем обработку без retry-шторма (см. notifyCardPaymentUnavailable).
-		return s.notifyCardPaymentUnavailable(ctx, cmd.TelegramID, err)
+		// Платёж не создан (или исход неизвестен, но ссылки у пользователя нет —
+		// оплатить его нельзя). Фиксируем это в строке заказа и сообщаем
+		// пользователю вместе с явным выбором другого способа. Повторов
+		// consumer'а нет: их заменяет осознанное повторное нажатие.
+		return s.finishYooKassaCreateError(ctx, orderID, cmd.TelegramID, err)
 	}
 
 	if err := s.repo.UpdatePaymentCreated(
@@ -232,9 +318,53 @@ func (s *Service) HandleCreateSubscriptionCheckout(
 
 	return s.publishNotification(ctx, &kafkacontracts.TgNotification{
 		TelegramID: cmd.TelegramID,
-		Message:    "💳 Ссылка на оплату готова. Нажмите кнопку ниже, чтобы перейти к оплате 👇",
-		PayURL:     resp.Confirmation.ConfirmationURL,
+		Message: "💳 Ссылка на оплату готова — " + methodLabelYooKassa + ".\n\n" +
+			"Тариф: " + planSummary(plan.DurationDays, plan.AmountValue) + ".\n\n" +
+			"Подписка активируется автоматически, как только платёж подтвердится. Нажмите кнопку ниже, чтобы перейти к оплате 👇",
+		PayURL: resp.Confirmation.ConfirmationURL,
 	})
+}
+
+// finishYooKassaCreateError — платёж YooKassa создать не удалось: статус
+// заказа и уведомление пользователю записываются в одной транзакции.
+func (s *Service) finishYooKassaCreateError(ctx context.Context, orderID string, telegramID int64, cause error) error {
+	status := "create_failed"
+	var httpErr *yooKassaHTTPError
+	if !errors.As(cause, &httpErr) || httpErr.StatusCode >= 500 {
+		// Сетевая ошибка или 5xx: исход неизвестен (ссылки у пользователя нет).
+		status = "create_unknown"
+	}
+	slog.Error("yookassa create payment failed", "order_id", orderID, "telegram_id", telegramID, "status", status, "err", cause)
+
+	saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	tx, err := s.repo.BeginTx(saveCtx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(saveCtx) }()
+	if err := s.repo.MarkYooKassaCreateErrorTx(saveCtx, tx, orderID, status, cause.Error()); err != nil {
+		return err
+	}
+	if err := s.publishNotificationTx(saveCtx, tx, &kafkacontracts.TgNotification{
+		TelegramID: telegramID,
+		Message: "❌ Не удалось создать платёж " + methodLabelYooKassa + ". Деньги не списывались.\n\n" +
+			"Оплатите " + methodLabelPlatega + " или попробуйте этот способ ещё раз чуть позже 👇",
+		Keyboard: kafkacontracts.TgKeyboardPaymentMethod,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(saveCtx)
+}
+
+// yooKassaHTTPError — ответ YooKassa с кодом не 200/202.
+type yooKassaHTTPError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *yooKassaHTTPError) Error() string {
+	return fmt.Sprintf("yookassa create payment http=%d body=%s", e.StatusCode, e.Body)
 }
 
 func (s *Service) HandleBindCard(
@@ -959,7 +1089,7 @@ func (s *Service) createYooKassaPayment(
 	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		return nil, raw, fmt.Errorf("yookassa create payment http=%d body=%s", resp.StatusCode, string(raw))
+		return nil, raw, &yooKassaHTTPError{StatusCode: resp.StatusCode, Body: truncateText(string(raw), 1000)}
 	}
 
 	var parsed yooKassaPaymentResponse

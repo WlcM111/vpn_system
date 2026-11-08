@@ -118,4 +118,5 @@ type BillingPaymentProvider string
 const (
 	BillingPaymentProviderYooKassa  BillingPaymentProvider = "yookassa"
 	BillingPaymentProviderCryptoBot BillingPaymentProvider = "cryptobot"
+	BillingPaymentProviderPlatega   BillingPaymentProvider = "platega"
 )

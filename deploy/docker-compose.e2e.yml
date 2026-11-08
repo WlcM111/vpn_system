@@ -5,7 +5,7 @@
 #     -f deploy/docker-compose.dev.yml -f deploy/docker-compose.e2e.yml up -d
 #
 # Делает две вещи:
-#   1. billing ходит в стаб вместо боевого YooKassa;
+#   1. billing ходит в стаб вместо боевых YooKassa и Platega;
 #   2. порты сдвинуты, чтобы окружение не конфликтовало с другими проектами
 #      на машине разработчика.
 #
@@ -25,6 +25,8 @@ services:
     restart: unless-stopped
     environment:
       STUB_ADDR: ":8099"
+      STUB_PLATEGA_MERCHANT_ID: ${PLATEGA_MERCHANT_ID:-}
+      STUB_PLATEGA_SECRET: ${PLATEGA_SECRET:-}
     ports: !override
       - "127.0.0.1:58099:8099"
     healthcheck:
@@ -56,6 +58,8 @@ services:
   billing-service:
     environment:
       YOOKASSA_API_BASE: "http://yookassa-stub:8099"
+      # Тот же стаб отвечает и по контракту Platega.
+      PLATEGA_API_BASE: "http://yookassa-stub:8099"
     ports: !override
       - "127.0.0.1:58082:8082"
     depends_on:

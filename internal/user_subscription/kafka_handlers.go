@@ -3,7 +3,9 @@ package user_subscription
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	commonkafka "vpn-platform/internal/common/kafka"
@@ -79,6 +81,19 @@ func RunSubscriptionCommandsConsumer(ctx context.Context, reader *kafkago.Reader
 						return commonkafka.ErrSkip
 					}
 					return svc.HandleRotateToken(opCtx, &cmd)
+
+				case string(kafkacontracts.SubscriptionCommandGrantBonus):
+					var cmd kafkacontracts.GrantBonusCommand
+					if err := json.Unmarshal(msg.Value, &cmd); err != nil {
+						return commonkafka.ErrSkip
+					}
+					err := svc.HandleGrantBonus(opCtx, &cmd)
+					if errors.Is(err, ErrInvalidBonusCommand) {
+						// Неисправимая команда: в DLT, а не в бесконечный повтор.
+						slog.Warn("invalid grant bonus command", "command_id", cmd.CommandID, "err", err)
+						return commonkafka.ErrSkip
+					}
+					return err
 
 				default:
 					return commonkafka.ErrSkip

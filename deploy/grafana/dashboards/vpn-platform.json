@@ -542,7 +542,7 @@
     {
       "type": "table",
       "title": "Сервисы (доступность)",
-      "id": 10,
+      "id": 112,
       "gridPos": {
         "h": 7,
         "w": 10,
@@ -1854,6 +1854,211 @@
           }
         }
       ]
+    },
+    {
+      "type": "stat",
+      "title": "Platega: на ручной проверке",
+      "id": 107,
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 49
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Заказы Platega в статусах review_required, disputed, chargebacked, partially_refunded — нужно решение человека (docs/payments-platega.md).",
+      "targets": [
+        {
+          "expr": "sum(vpn_platform_billing_platega_payments{status=~\"review_required|disputed|chargebacked|partially_refunded\"}) or vector(0)",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Platega",
+      "id": 108,
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 55
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Platega: запросы к API и колбэки",
+      "id": 109,
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 56
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (op, result) (increase(vpn_platform_billing_platega_requests_total[1h]))",
+          "refId": "A",
+          "legendFormat": "api {{op}} {{result}}"
+        },
+        {
+          "expr": "sum by (result) (increase(vpn_platform_billing_platega_callbacks_total[1h]))",
+          "refId": "B",
+          "legendFormat": "callback {{result}}"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Platega: просроченные сверки",
+      "id": 110,
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 56
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Заказы, сверка статуса которых просрочена больше чем на 10 минут. Больше нуля — воркер сверки или API Platega не работают.",
+      "targets": [
+        {
+          "expr": "vpn_platform_billing_platega_overdue_checks or vector(0)",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Platega: заказы ждут оплаты",
+      "id": 111,
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 60
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "vpn_platform_billing_platega_payments{status=\"pending\"} or vector(0)",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
     }
   ]
 }

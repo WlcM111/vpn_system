@@ -1,7 +1,6 @@
 package tg_bot_gateway
 
 import (
-	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -138,48 +137,9 @@ func documentsUnavailableText() string {
 	return "Документы сейчас готовятся, попробуй открыть их чуть позже 🙏"
 }
 
-// cardPaymentFallbackText формирует сообщение после выбора тарифа картой, пока
-// YooKassa недоступна: что покупает пользователь, срок, сумма и пример-ссылка.
-//
-//	title    — название тарифа (напр. «Подписка 30 дней»).
-//	days     — срок в днях.
-//	priceRUB — цена в рублях (строка, напр. «89»).
-func cardPaymentFallbackText(title string, days int, priceRUB string) string {
-	return fmt.Sprintf(
-		"🧾 *Оформление подписки*\n\n"+
-			"Тариф: *%s*\n"+
-			"Срок: *%d дней*\n"+
-			"Сумма к оплате: *%s ₽*\n\n"+
-			"Нажмите кнопку ниже, чтобы перейти к оплате 👇",
-		title, days, priceRUB,
-	)
-}
-
-// cardPaymentURL возвращает ссылку для кнопки «Оплатить».
-// Пока — заглушка из env (CARD_PAYMENT_FALLBACK_URL). Когда заработает реальная
-// оплата — ссылка будет формироваться billing'ом; эту функцию можно убрать.
-func cardPaymentURL() string {
-	link := strings.TrimSpace(os.Getenv("CARD_PAYMENT_FALLBACK_URL"))
-	if link == "" {
-		link = "https://example.com/pay/sample-link"
-	}
-	return link
-}
-
 func formatDate(t *time.Time) string {
 	if t == nil {
 		return "-"
 	}
 	return t.Format("02.01.2006")
-}
-
-// yooKassaConfigured сообщает, настроена ли оплата картой (YooKassa).
-// Бот читает те же переменные, что и billing-сервис: если заданы и SHOP_ID,
-// и SECRET_KEY — оплата картой доступна, и бот запускает реальный платёж.
-// Проверка выполняется при каждом запросе, поэтому после заполнения переменных
-// и перезапуска бота режим переключается автоматически (без правок кода).
-func yooKassaConfigured() bool {
-	shopID := strings.TrimSpace(os.Getenv("YOOKASSA_SHOP_ID"))
-	secretKey := strings.TrimSpace(os.Getenv("YOOKASSA_SECRET_KEY"))
-	return shopID != "" && secretKey != ""
 }

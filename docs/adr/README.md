@@ -13,5 +13,6 @@ choice stays readable.
 | [0002](0002-single-agent-per-node.md) | One agent per VPN node, not one per protocol | Accepted |
 | [0003](0003-access-revocation-independent-of-billing.md) | Access revocation independent of the billing provider | Accepted |
 | [0004](0004-aws-not-in-production.md) | AWS as infrastructure-as-code demonstration, not production hosting | Accepted |
+| [0005](0005-platega-second-payment-provider.md) | Platega as a second payment provider inside billing | Accepted |
 
 Format: [Michael Nygard's template](https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions).

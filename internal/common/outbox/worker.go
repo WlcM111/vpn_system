@@ -57,26 +57,70 @@ func RunPublisher(ctx context.Context, pool *pgxpool.Pool, producer *commonkafka
 		}
 		idleSleep = 200 * time.Millisecond
 
-		// blockedKeys: если событие с данным message_key упало, мы НЕ публикуем
-		// последующие события с тем же ключом в этом проходе — иначе нарушится
-		// порядок событий одного пользователя (events keyed by telegram_id).
-		// Они подхватятся в следующем цикле, после успешного ретрая упавшего.
-		blockedKeys := make(map[string]struct{}, 8)
-		for _, e := range events {
-			if _, blocked := blockedKeys[e.MessageKey]; blocked {
-				// откатываем статус с 'processing' обратно в 'pending', чтобы взять в следующий раз
-				_ = MarkRetry(ctx, pool, e.ID, "blocked by earlier failed event with same key")
-				continue
+		publishBatch(ctx, pool, events, serviceName, func(ctx context.Context, e PendingEvent) error {
+			return producer.PublishJSON(ctx, e.Topic, e.MessageKey, jsonRaw(e.Payload))
+		})
+	}
+}
+
+// publishBatch публикует захваченные события по порядку.
+//
+// Если событие упало, последующие события того же топика и ключа в этом
+// проходе не публикуются (порядок событий одного ключа), а возвращаются в
+// очередь без расхода попытки и не раньше упавшего (ReleaseBlocked).
+//
+// Если контекст отменён (остановка сервиса), неопубликованные события
+// возвращаются в очередь сразу, а не ждут истечения аренды.
+func publishBatch(ctx context.Context, pool *pgxpool.Pool, events []PendingEvent, serviceName string, publish func(context.Context, PendingEvent) error) {
+	blocked := make(map[string]time.Time, 8)
+	for i, e := range events {
+		if ctx.Err() != nil {
+			releaseOnShutdown(pool, events[i:], serviceName)
+			return
+		}
+		chain := e.Topic + "\x00" + e.MessageKey
+		if notBefore, ok := blocked[chain]; ok {
+			if err := ReleaseBlocked(ctx, pool, e.ID, notBefore, "blocked by earlier failed event with same key"); err != nil {
+				slog.Warn("outbox release blocked event failed", "service", serviceName, "id", e.ID, "err", err)
 			}
-			if err := producer.PublishJSON(ctx, e.Topic, e.MessageKey, jsonRaw(e.Payload)); err != nil {
-				_ = MarkRetry(ctx, pool, e.ID, err.Error())
-				if e.Attempts >= 20 {
-					_ = SaveFailedMessage(ctx, pool, serviceName, e.Topic, e.MessageKey, "outbox", e.Payload, err.Error())
+			continue
+		}
+		if err := publish(ctx, e); err != nil {
+			if ctx.Err() != nil {
+				releaseOnShutdown(pool, events[i:], serviceName)
+				return
+			}
+			status, next, mErr := MarkRetryReturning(ctx, pool, e.ID, err.Error())
+			if mErr != nil {
+				// Событие останется в 'processing' и будет перезахвачено после аренды.
+				slog.Error("outbox mark retry failed", "service", serviceName, "id", e.ID, "err", mErr)
+				next = time.Now().Add(DefaultProcessingLease)
+			}
+			if status == "failed" {
+				if sErr := SaveFailedMessage(ctx, pool, serviceName, e.Topic, e.MessageKey, "outbox", e.Payload, err.Error()); sErr != nil {
+					slog.Error("outbox save failed message failed", "service", serviceName, "id", e.ID, "err", sErr)
 				}
-				blockedKeys[e.MessageKey] = struct{}{}
-				continue
 			}
-			_ = MarkPublished(ctx, pool, e.ID)
+			blocked[chain] = next
+			continue
+		}
+		if err := MarkPublished(ctx, pool, e.ID); err != nil {
+			// Опубликовано, но не отмечено: после аренды событие уйдёт
+			// повторно — получатели идемпотентны.
+			slog.Error("outbox mark published failed", "service", serviceName, "id", e.ID, "err", err)
+		}
+	}
+}
+
+// releaseOnShutdown возвращает неопубликованные события в очередь при
+// остановке сервиса (с собственным коротким таймаутом).
+func releaseOnShutdown(pool *pgxpool.Pool, events []PendingEvent, serviceName string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	for _, e := range events {
+		if err := ReleaseBlocked(ctx, pool, e.ID, time.Now(), "publisher stopped"); err != nil {
+			slog.Warn("outbox release on shutdown failed; lease will expire", "service", serviceName, "id", e.ID, "err", err)
+			return
 		}
 	}
 }

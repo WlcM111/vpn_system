@@ -10,6 +10,7 @@ const (
 	SubscriptionCommandReferralAttribute SubscriptionCommandType = "subscription.referral_attribute"
 	SubscriptionCommandReferralRedeem    SubscriptionCommandType = "subscription.referral_redeem"
 	SubscriptionCommandRotateToken       SubscriptionCommandType = "subscription.rotate_token"
+	SubscriptionCommandGrantBonus        SubscriptionCommandType = "subscription.grant_bonus"
 )
 
 // RotateTokenCommand — запрос на перевыпуск ссылки подписки.
@@ -63,4 +64,20 @@ type ReferralRedeemCommand struct {
 	Type       SubscriptionCommandType `json:"type"`
 	CommandID  string                  `json:"command_id"`
 	TelegramID int64                   `json:"telegram_id"`
+}
+
+// GrantBonusCommand — начисление бонусных дней по кампании оператора
+// (scripts/bonus_campaign.sh). Начисление ровно одно на пару
+// (telegram_id, campaign): журнал subscription_grants, source = 'admin',
+// business_key = campaign. Message уходит пользователю только вместе с
+// начислением; {until} заменяется датой окончания доступа (ДД.ММ.ГГГГ),
+// {days} — сроком начисления («30 дней»).
+type GrantBonusCommand struct {
+	Type       SubscriptionCommandType `json:"type"`
+	CommandID  string                  `json:"command_id"`
+	TelegramID int64                   `json:"telegram_id"`
+	Days       int                     `json:"days"`
+	Campaign   string                  `json:"campaign"`
+	Message    string                  `json:"message"`
+	ParseMode  string                  `json:"parse_mode,omitempty"`
 }

@@ -1,0 +1,31 @@
+# Контекст сборки образов — корень репозитория (deploy/docker-compose.dev.yml:
+# context: ..), а Dockerfile'ы делают COPY . . в стадии сборки. Без этого файла
+# в контекст и в слой builder-стадии (кэш сборки на сервере) попадали .env
+# с ключами, его резервные копии и вся история .git. Для сборки нужны только
+# исходники Go, go.mod и go.sum.
+
+# Секреты и их резервные/временные копии (scripts/setup_platega_env.sh).
+**/.env
+**/.env.*
+!deploy/.env.example
+!deploy/.env.e2e
+deploy/alertmanager/alertmanager.yml
+
+# Состояние Terraform может содержать ключи.
+**/.terraform
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfvars
+
+# Репозиторий, артефакты и мусор.
+.git
+**/*.zip
+**/*.patch
+**/*.log
+**/*.out
+**/*.sql.gz
+dump.sql
+**/.DS_Store
+bin/
+dist/
+tmp/

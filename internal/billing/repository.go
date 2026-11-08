@@ -144,7 +144,7 @@ func (r *Repository) UpdatePaymentWebhookState(
 			cancellation_reason = COALESCE(NULLIF($4, ''), cancellation_reason),
 			raw_response = $5::jsonb,
 			updated_at = now()
-		WHERE payment_id = $1
+		WHERE payment_id = $1 AND provider = 'yookassa'
 	`, paymentID, status, paymentMethodID, cancellationReason, rawStr)
 	if err != nil {
 		return fmt.Errorf("update payment webhook state: %w", err)
@@ -162,7 +162,7 @@ func (r *Repository) GetPaymentByPaymentID(ctx context.Context, paymentID string
 			COALESCE(cancellation_reason, ''),
 			metadata, raw_response, created_at, updated_at
 		FROM payments
-		WHERE payment_id = $1
+		WHERE payment_id = $1 AND provider = 'yookassa'
 	`, paymentID)
 
 	return r.scanPayment(row, "get payment by payment_id")
@@ -366,7 +366,7 @@ func (r *Repository) RecordWebhookFingerprint(ctx context.Context, paymentID, ev
 func (r *Repository) DeleteWebhookFingerprint(ctx context.Context, paymentID, eventType, fingerprint string) error {
 	_, err := r.pool.Exec(ctx, `
 		DELETE FROM billing_webhook_events
-		WHERE payment_id = $1 AND event_type = $2 AND fingerprint = $3
+		WHERE provider = 'yookassa' AND payment_id = $1 AND event_type = $2 AND fingerprint = $3
 	`, paymentID, eventType, fingerprint)
 	if err != nil {
 		return fmt.Errorf("delete webhook fingerprint: %w", err)

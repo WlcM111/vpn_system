@@ -19,7 +19,14 @@ import (
 
 func (a *App) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 	msg := update.Message
-	if msg == nil {
+	if msg == nil || msg.Chat == nil {
+		return
+	}
+	// Бот работает только в личном чате с пользователем: Telegram ID чата —
+	// это ID покупателя, а состояние (выбранный тариф) принадлежит ему одному.
+	// В группе кнопку мог бы нажать другой человек.
+	if msg.Chat.Type != "private" || msg.From == nil || msg.From.ID != msg.Chat.ID {
+		log.Printf("[tg-bot] ignored update from non-private chat=%d type=%q", msg.Chat.ID, msg.Chat.Type)
 		return
 	}
 
@@ -62,7 +69,26 @@ func (a *App) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 		return
 	}
 
+	// Кнопки, убранные из меню, — только пояснение, без действия.
+	if a.handleRemovedButton(ctx, chatID, state, text) {
+		return
+	}
+
+	// Способ оплаты обрабатывается на любом шаге: кнопка могла прийти со
+	// старой клавиатуры или с клавиатуры из сообщения billing об ошибке.
+	// Без свежего выбора тарифа счёт не создаётся.
+	switch text {
+	case btnPayMethodPlatega:
+		a.handlePaymentMethodChoice(ctx, chatID, state, kafkacontracts.BillingPaymentProviderPlatega)
+		return
+	case btnPayMethodYooKassa:
+		a.handlePaymentMethodChoice(ctx, chatID, state, kafkacontracts.BillingPaymentProviderYooKassa)
+		return
+	}
+
 	switch state.Step {
+	case StepPaymentMethod:
+		a.handlePaymentMethodMenu(ctx, chatID, state, text)
 	case StepBuyMenu:
 		a.handleBuyMenuChoice(ctx, chatID, state, text)
 	case StepServicesMenu:
@@ -121,9 +147,6 @@ func (a *App) handleMainMenuChoice(ctx context.Context, chatID int64, state *Cha
 	case btnTrial:
 		a.handleStartTrial(ctx, chatID, state)
 
-	case btnCancelSub:
-		a.handleCancelSubscription(ctx, chatID, state)
-
 	case btnDownloadVPN:
 		a.handleDownloadVPN(ctx, chatID, state)
 
@@ -151,17 +174,13 @@ func (a *App) handleMainMenuChoice(ctx context.Context, chatID int64, state *Cha
 }
 
 func (a *App) handleBuyMenuChoice(ctx context.Context, chatID int64, state *ChatState, text string) {
+	// Подписи кнопок тарифов содержат цену (labelMonthly и т.п.), поэтому
+	// сравниваем именно с ними. После выбора тарифа — выбор способа оплаты.
+	if p, ok := planByButton(text); ok {
+		a.handlePlanSelected(ctx, chatID, state, p)
+		return
+	}
 	switch text {
-	// Тарифы оплачиваются картой. Подписи кнопок содержат цену (labelMonthly и т.п.),
-	// поэтому сравниваем именно с ними. Крипта и привязка карты временно скрыты.
-	case labelMonthly():
-		a.handleCardCheckout(ctx, chatID, state, kafkacontracts.PlanCodeMonthly, "Подписка 30 дней", 30, priceMonthly())
-	case labelQuarterly():
-		a.handleCardCheckout(ctx, chatID, state, kafkacontracts.PlanCodeQuarterly, "Подписка 90 дней", 90, priceQuarterly())
-	case labelSemiannual():
-		a.handleCardCheckout(ctx, chatID, state, kafkacontracts.PlanCodeSemiannual, "Подписка 180 дней", 180, priceSemiannual())
-	case labelAnnual():
-		a.handleCardCheckout(ctx, chatID, state, kafkacontracts.PlanCodeAnnual, "Подписка 360 дней", 360, priceAnnual())
 	case btnBack:
 		state.Step = StepMainMenu
 		_ = a.stateStore.Set(ctx, chatID, state)
@@ -171,34 +190,11 @@ func (a *App) handleBuyMenuChoice(ctx context.Context, chatID int64, state *Chat
 	}
 }
 
-// handleCardCheckoutFallback показывает пользователю детали заказа и пример-ссылку
-// на оплату картой, пока YooKassa недоступна. Команда в billing НЕ публикуется
-// (чтобы не было «висящих» ожиданий) — это временная заглушка. Функционал оплаты
-// картой (handleCreateCheckout) сохранён и не удалён; вернуть его — заменив тело
-// этого метода обратно на вызов handleCreateCheckout.
-func (a *App) handleCardCheckoutFallback(ctx context.Context, chatID int64, state *ChatState, title string, days int, priceRUB string) {
-	state.Step = StepBuyMenu
-	_ = a.stateStore.Set(ctx, chatID, state)
-
-	msg := tgbotapi.NewMessage(chatID, cardPaymentFallbackText(title, days, priceRUB))
-	msg.ParseMode = "Markdown"
-	// Inline-кнопка «Оплатить» под сообщением открывает ссылку на оплату.
-	// Пока ссылка — заглушка (cardPaymentURL); потом заменишь на реальную.
-	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonURL("💳 Оплатить", cardPaymentURL()),
-		),
-	)
-	if _, err := a.bot.Send(msg); err != nil {
-		log.Printf("[tg-bot] failed to send card fallback: %v", err)
-	}
-}
-
 // handleCreateCryptoCheckout публикует команду в crypto.commands и сообщает пользователю,
 // что готовится ссылка оплаты. Дальше бот ничего не делает — ссылку пользователю пришлёт
 // crypto-billing-service через outbox → tg.notifications.
 //
-// В отличие от handleCreateCheckout для YooKassa, тут нет mock-режима: симуляция
+// В отличие от оплаты по тарифу (handlePaymentMethodChoice), тут нет mock-режима: симуляция
 // крипто-платежа сложна (нет фиатного "симулировать списание"), и в dev-режиме
 // без Kafka криптокнопки просто отдают сообщение об этом.
 func (a *App) handleCreateCryptoCheckout(
@@ -267,61 +263,6 @@ func (a *App) sendText(chatID int64, text string, keyboard tgbotapi.ReplyKeyboar
 	if _, err := a.bot.Send(msg); err != nil {
 		log.Printf("[tg-bot] failed to send message: %v", err)
 	}
-}
-
-func (a *App) handleCreateCheckout(
-	ctx context.Context,
-	chatID int64,
-	state *ChatState,
-	planCode kafkacontracts.PlanCode,
-	durationDays int,
-) {
-	log.Printf("[tg-bot] action=create_checkout chat=%d plan=%s", chatID, planCode)
-
-	state.Step = StepBuyMenu
-	_ = a.stateStore.Set(ctx, chatID, state)
-
-	if !a.kafkaEnabled() {
-		_, err := a.backend.ApplyPaidSubscription(ctx, chatID, durationDays)
-		if err != nil {
-			log.Printf("[tg-bot] mock ApplyPaidSubscription error: %v", err)
-			a.sendText(chatID, "Не удалось симулировать оплату в mock-режиме.", buyMenuKeyboard())
-			return
-		}
-
-		a.sendText(
-			chatID,
-			"✅ Подписка активирована.\nСейчас пришлю ссылку доступа.",
-			mainMenuWithBackKeyboard(),
-		)
-		if err := a.sendSubscriptionLinksForUser(ctx, chatID); err != nil {
-			log.Printf("[tg-bot] send links after mock payment error: %v", err)
-		}
-		return
-	}
-
-	cmd := &kafkacontracts.CreateSubscriptionCheckoutCommand{
-		Type:       kafkacontracts.BillingCommandCreateSubscriptionCheckout,
-		CommandID:  uuid.NewString(),
-		TelegramID: chatID,
-		PlanCode:   planCode,
-		// Автосписания пока не подключаем: метод не сохраняем.
-		SavePaymentMethod: false,
-		// Возврат покупателя после оплаты — в бота (иначе YooKassa вернёт на
-		// дефолтную заглушку billing). Пользователь возвращается прямо в чат.
-		ReturnURL: "https://t.me/vpn_house_bot",
-	}
-
-	opCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-
-	if err := a.kafkaProducer.PublishJSON(opCtx, commonkafka.TopicBillingCommands, fmt.Sprint(chatID), cmd); err != nil {
-		log.Printf("[tg-bot] publish create checkout command error: %v", err)
-		a.sendText(chatID, "Не удалось начать оплату. Попробуй чуть позже.", buyMenuKeyboard())
-		return
-	}
-
-	a.sendText(chatID, "Готовлю ссылку на оплату. Сейчас пришлю её отдельным сообщением 👌", buyMenuKeyboard())
 }
 
 func (a *App) handleBindCard(ctx context.Context, chatID int64, state *ChatState) {
@@ -477,44 +418,6 @@ func (a *App) handleStartTrial(ctx context.Context, chatID int64, state *ChatSta
 	if err := a.sendSubscriptionLinksForUser(ctx, chatID); err != nil {
 		log.Printf("[tg-bot] failed to send subscription link after trial: %v", err)
 	}
-}
-
-func (a *App) handleCancelSubscription(ctx context.Context, chatID int64, state *ChatState) {
-	state.Step = StepMainMenu
-	if err := a.stateStore.Set(ctx, chatID, state); err != nil {
-		log.Printf("[tg-bot] failed to save state: %v", err)
-	}
-
-	if a.kafkaEnabled() {
-		cmd := &kafkacontracts.CancelSubscriptionCommand{
-			Type:       kafkacontracts.SubscriptionCommandCancel,
-			CommandID:  uuid.NewString(),
-			TelegramID: chatID,
-		}
-
-		if err := a.publishSubscriptionCommand(ctx, chatID, cmd); err != nil {
-			log.Printf("[tg-bot] publish cancel_subscription error: %v", err)
-			a.sendText(chatID, "Сейчас не получается отменить подписку 😔", mainMenuKeyboard())
-			return
-		}
-
-		a.sendText(chatID, "Отправил запрос на отмену подписки, подожди немного 👌", mainMenuWithBackKeyboard())
-		return
-	}
-
-	info, err := a.backend.CancelSubscription(ctx, chatID)
-	if err != nil {
-		log.Printf("[tg-bot] CancelSubscription error: %v", err)
-		a.sendText(chatID, "Сейчас не получается отменить подписку 😔", mainMenuKeyboard())
-		return
-	}
-
-	if info.Status == StatusNone || info.Status == StatusExpired {
-		a.sendText(chatID, "Активной подписки нет.", mainMenuWithBackKeyboard())
-		return
-	}
-
-	a.sendText(chatID, "✅ Подписка отменена.", mainMenuKeyboard())
 }
 
 func (a *App) handleDownloadVPN(_ context.Context, chatID int64, _ *ChatState) {
@@ -691,28 +594,4 @@ func (a *App) sendSubscriptionLinksForUser(ctx context.Context, chatID int64) er
 
 	a.sendText(chatID, "Если что-то не получается — напиши в поддержку 👇", mainMenuWithBackKeyboard())
 	return nil
-}
-
-// handleCardCheckout — диспетчер оплаты картой.
-//   - YooKassa настроена   → реальный платёж через billing (handleCreateCheckout);
-//     billing создаст платёж в YooKassa и пришлёт пользователю реальную ссылку.
-//   - YooKassa не настроена → заглушка-ссылка (handleCardCheckoutFallback).
-//
-// Решение принимается по факту наличия токена (yooKassaConfigured) при каждом
-// запросе: заполнил YOOKASSA_SHOP_ID + YOOKASSA_SECRET_KEY и перезапустил бота —
-// переключение на реальные ссылки происходит автоматически.
-func (a *App) handleCardCheckout(
-	ctx context.Context,
-	chatID int64,
-	state *ChatState,
-	planCode kafkacontracts.PlanCode,
-	title string,
-	days int,
-	priceRUB string,
-) {
-	if yooKassaConfigured() {
-		a.handleCreateCheckout(ctx, chatID, state, planCode, days)
-		return
-	}
-	a.handleCardCheckoutFallback(ctx, chatID, state, title, days, priceRUB)
 }
