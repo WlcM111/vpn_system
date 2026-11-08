@@ -15,8 +15,8 @@ import (
 // спрашивает node-agent по HTTP, пускать ли клиента, а паролем выступает
 // VLESS-UUID пользователя. Поэтому здесь нет ни InboundTag, ни отдельных учёток.
 //
-// Источник — таблица vpn_hysteria_endpoints. Если она пуста, но задан
-// HYSTERIA_ADDRESS в окружении — используется он.
+// Источник — таблица vpn_hysteria_endpoints. Env-фолбэка нет: адрес, порт и
+// SNI у каждой ноды свои, одной группой переменных окружения их не описать.
 // ============================================================================
 
 // HysteriaEndpoint — параметры одного Hysteria2-транспорта.
@@ -38,36 +38,6 @@ type HysteriaEndpoint struct {
 // hysteriaConfigEnabled — глобальный рубильник выдачи Hysteria (env).
 func hysteriaConfigEnabled() bool {
 	return strings.EqualFold(strings.TrimSpace(os.Getenv("HYSTERIA_CONFIG_ENABLED")), "true")
-}
-
-// hysteriaEndpointFromEnv собирает эндпоинт из окружения (для одной ноды без
-// записи в БД). Возвращает (endpoint, true) если задан HYSTERIA_ADDRESS.
-func hysteriaEndpointFromEnv() (HysteriaEndpoint, bool) {
-	addr := strings.TrimSpace(os.Getenv("HYSTERIA_ADDRESS"))
-	if addr == "" {
-		return HysteriaEndpoint{}, false
-	}
-
-	port := 443
-	if raw := strings.TrimSpace(os.Getenv("HYSTERIA_PORT")); raw != "" {
-		if p, err := strconv.Atoi(raw); err == nil && p > 0 {
-			port = p
-		}
-	}
-
-	return HysteriaEndpoint{
-		HysteriaKey:  "env",
-		ServerKey:    strings.TrimSpace(os.Getenv("HYSTERIA_SERVER_KEY")),
-		Enabled:      true,
-		SortOrder:    0,
-		Address:      addr,
-		Port:         port,
-		SNI:          strings.TrimSpace(os.Getenv("HYSTERIA_SNI")),
-		Insecure:     strings.EqualFold(strings.TrimSpace(os.Getenv("HYSTERIA_INSECURE")), "true"),
-		ObfsType:     strings.TrimSpace(os.Getenv("HYSTERIA_OBFS_TYPE")),
-		ObfsPassword: strings.TrimSpace(os.Getenv("HYSTERIA_OBFS_PASSWORD")),
-		Remarks:      envOrDefault("HYSTERIA_REMARKS", "Hysteria"),
-	}, true
 }
 
 // selectHysteriaForServer выбирает эндпоинт для конкретного server_key.

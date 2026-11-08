@@ -13,13 +13,14 @@ import (
 
 // PlategaSettings — настройки Platega из окружения billing-service.
 //
-//	PLATEGA_MERCHANT_ID        UUID мерчанта (ЛК Platega → Настройки)
-//	PLATEGA_SECRET             API-ключ
-//	PLATEGA_API_BASE           адрес API, по умолчанию https://app.platega.io
-//	PLATEGA_PAYMENT_METHOD     код способа оплаты (PaymentMethodInt), по умолчанию 2 (СБП QR)
-//	PLATEGA_RETURN_URL         адрес возврата после оплаты (необязательно)
-//	PLATEGA_FAILED_URL         адрес возврата при неуспехе (необязательно)
-//	PLATEGA_RECONCILE_TICK     период воркера сверки, по умолчанию 30s
+//	PLATEGA_ENABLED               рубильник (по умолчанию включён при заданных ключах; false/0 выключает)
+//	PLATEGA_MERCHANT_ID           UUID мерчанта (ЛК Platega → Настройки)
+//	PLATEGA_SECRET                API-ключ
+//	PLATEGA_API_BASE              адрес API, по умолчанию https://app.platega.io
+//	PLATEGA_PAYMENT_METHOD        код способа оплаты (PaymentMethodInt), по умолчанию 2 (СБП QR)
+//	PLATEGA_RETURN_URL            адрес возврата после оплаты (необязательно)
+//	PLATEGA_FAILED_URL            адрес возврата при неуспехе (необязательно)
+//	PLATEGA_RECONCILE_TICK        период воркера сверки, по умолчанию 30s
 //	PLATEGA_RECONCILE_BATCH_SIZE  заказов за проход, по умолчанию 50
 //
 // Возврат на return-/failed-URL оплату НЕ подтверждает: это только переход
@@ -48,9 +49,9 @@ type PlategaSettings struct {
 }
 
 // LoadPlategaSettings читает настройки. Platega выключена, если не задан ни
-// ID мерчанта, ни ключ. Если задано только одно из двух или значение
-// некорректно — возвращается ошибка, а Platega остаётся выключенной: счёт
-// с заведомо неверными ключами не создаётся.
+// ID мерчанта, ни ключ, либо PLATEGA_ENABLED=false. Если задано только одно
+// из двух или значение некорректно — возвращается ошибка, а Platega остаётся
+// выключенной: счёт с заведомо неверными ключами не создаётся.
 func LoadPlategaSettings() (PlategaSettings, error) {
 	st := PlategaSettings{
 		ReconcileTick:     parseDurationEnv("PLATEGA_RECONCILE_TICK", 30*time.Second),
@@ -59,6 +60,9 @@ func LoadPlategaSettings() (PlategaSettings, error) {
 		StaleCreating:     2 * time.Minute,
 		ReuseMinRemaining: 2 * time.Minute,
 		DefaultExpiresIn:  15 * time.Minute,
+	}
+	if enabledRaw := strings.ToLower(strings.TrimSpace(os.Getenv("PLATEGA_ENABLED"))); enabledRaw == "false" || enabledRaw == "0" || enabledRaw == "no" {
+		return st, nil
 	}
 	merchant := strings.TrimSpace(os.Getenv("PLATEGA_MERCHANT_ID"))
 	secret := strings.TrimSpace(os.Getenv("PLATEGA_SECRET"))

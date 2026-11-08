@@ -50,6 +50,7 @@ func NewReader(brokers []string, topic, groupID string) *kafkago.Reader {
 		Brokers:        brokers,
 		Topic:          topic,
 		GroupID:        groupID,
+		Dialer:         DialerFromEnv(),
 		MinBytes:       minBytes,
 		MaxBytes:       maxBytes,
 		MaxWait:        time.Duration(maxWaitMs) * time.Millisecond,
@@ -225,17 +226,6 @@ func runConsumer(ctx context.Context, reader messageReader, serviceName string, 
 			}
 
 			// Повтор ТОГО ЖЕ сообщения на месте.
-			//
-			// Раньше здесь была пауза и continue. Это возвращало управление к
-			// FetchMessage, который отдаёт СЛЕДУЮЩЕЕ сообщение, а не текущее:
-			// упавшее сообщение молча пропускалось, offset не коммитился, и
-			// повторная обработка наступала только после рестарта сервиса или
-			// ребаланса группы. Для billing.events это означало потерю
-			// подтверждённого платежа: деньги списаны, подписка не выдана.
-			//
-			// Теперь сообщение повторяется в цикле до успеха или до порога DLT.
-			// Порядок в партиции сохраняется, потому что мы не идём дальше, пока
-			// текущее сообщение не обработано.
 			for err != nil && attemptCount < 20 {
 				select {
 				case <-ctx.Done():
@@ -263,14 +253,6 @@ func runConsumer(ctx context.Context, reader messageReader, serviceName string, 
 			}
 
 			if err != nil {
-				// Ретраи исчерпаны либо handler попросил пропустить сообщение.
-				//
-				// Коммитим ТОЛЬКО если сообщение реально легло в DLT. Раньше
-				// ошибка публикации проглатывалась через `_ =`, а коммит шёл
-				// в любом случае: сообщение исчезало бесследно, ни в топике,
-				// ни в DLT. Для billing.events это означало потерю
-				// подтверждённого платежа — деньги списаны, подписка не выдана,
-				// и следа не осталось нигде.
 				if dlt != nil {
 					if !publishDLTUntilDone(ctx, dlt, msg, serviceName, err) {
 						return nil

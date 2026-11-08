@@ -490,6 +490,7 @@ else
 	say "Адрес колбэка для ЛК Platega (Настройки → Callback URLs): https://<PUBLIC_DOMAIN>/webhooks/platega"
 fi
 say ""
-say "Эти параметры читает только billing-service: они вступят в силу, когда его контейнер"
-say "будет пересоздан (docker compose up -d --no-deps billing-service; restart не перечитывает .env)."
+say "Эти параметры читает billing-service, а PLATEGA_MERCHANT_ID — ещё и tg-bot-gateway (проверка"
+say "доступности «Способа 1»): они вступят в силу, когда контейнеры будут пересозданы"
+say "(docker compose up -d --no-deps billing-service tg-bot-gateway; restart не перечитывает .env)."
 say "Сервисы не перезапускались. Дальше — шаги развёртывания из APPLY_DEPLOY_RU.md."

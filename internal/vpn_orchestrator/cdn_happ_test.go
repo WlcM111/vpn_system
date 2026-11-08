@@ -80,12 +80,10 @@ func TestCDNNodeCountedOncePerServer(t *testing.T) {
 		{
 			PoolItem:   PoolItem{ItemKey: "lt-a", ServerKey: "lt-main-1"},
 			Credential: UserCredential{VLESSUUID: "uuid-1"},
-			URL:        "vless://uuid-1@lt.race-src.com:443#LT-A",
 		},
 		{
 			PoolItem:   PoolItem{ItemKey: "lt-b", ServerKey: "lt-main-1"},
 			Credential: UserCredential{VLESSUUID: "uuid-1"},
-			URL:        "vless://uuid-1@lt.race-src.com:443#LT-B",
 		},
 	}
 
@@ -107,18 +105,15 @@ func TestCDNNodeCountMatchesIssuedLinks(t *testing.T) {
 		{
 			PoolItem:   PoolItem{ItemKey: "lt", ServerKey: "lt-main-1"},
 			Credential: UserCredential{VLESSUUID: "uuid-1"},
-			URL:        "vless://uuid-1@lt.race-src.com:443#LT",
 		},
 		{
 			PoolItem:   PoolItem{ItemKey: "ee", ServerKey: "ee-main-1"},
 			Credential: UserCredential{VLESSUUID: "uuid-2"},
-			URL:        "vless://uuid-2@ee.race-src.com:443#EE",
 		},
 		// У этой ноды CDN-эндпоинта нет — в n она попасть не должна.
 		{
 			PoolItem:   PoolItem{ItemKey: "ar", ServerKey: "ar-main-1"},
 			Credential: UserCredential{VLESSUUID: "uuid-3"},
-			URL:        "vless://uuid-3@ar.race-src.com:443#AR",
 		},
 	}
 
@@ -215,7 +210,6 @@ func TestDisabledCDNNodeDropsOutOfCount(t *testing.T) {
 	items := []FeedItem{{
 		PoolItem:   PoolItem{ItemKey: "lt", ServerKey: "lt-main-1"},
 		Credential: UserCredential{VLESSUUID: "uuid-1"},
-		URL:        "vless://uuid-1@lt.race-src.com:443#LT",
 	}}
 
 	// ListEnabledCDNEndpoints не отдаёт выключенные строки, поэтому
@@ -238,7 +232,6 @@ func TestBrokenCDNEndpointDoesNotCount(t *testing.T) {
 	items := []FeedItem{{
 		PoolItem:   PoolItem{ItemKey: "lt", ServerKey: "lt-main-1"},
 		Credential: UserCredential{VLESSUUID: "uuid-1"},
-		URL:        "vless://uuid-1@lt.race-src.com:443#LT",
 	}}
 
 	// Эндпоинт без адреса: BuildCDNVLESSURLFromEndpoint вернёт "", ссылка в
@@ -267,12 +260,10 @@ func TestUnreachableNodeDoesNotBreakFeed(t *testing.T) {
 		{
 			PoolItem:   PoolItem{ItemKey: "lt", ServerKey: "lt-main-1"},
 			Credential: UserCredential{VLESSUUID: "uuid-1"},
-			URL:        "vless://uuid-1@lt.race-src.com:443#LT",
 		},
 		{
 			PoolItem:   PoolItem{ItemKey: "ar", ServerKey: "ar-main-1"},
 			Credential: UserCredential{VLESSUUID: "uuid-2"},
-			URL:        "vless://uuid-2@ar.race-src.com:443#AR",
 		},
 	}
 
@@ -282,8 +273,8 @@ func TestUnreachableNodeDoesNotBreakFeed(t *testing.T) {
 	if len(cdnServers) != 2 {
 		t.Fatalf("n=%d, ожидалось 2", len(cdnServers))
 	}
-	if len(lines) < 4 {
-		t.Fatalf("строк в фиде %d, ожидалось не менее 4 (2 основных + 2 CDN)", len(lines))
+	if len(lines) != 2 {
+		t.Fatalf("строк в фиде %d, ожидалось 2 (по CDN-ссылке на ноду)", len(lines))
 	}
 }
 

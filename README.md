@@ -95,15 +95,21 @@ a competing mechanism.
 
 ### VPN transport layer
 
-Four transports are offered simultaneously, so blocking one does not cut the
-user off:
+Every node offers three transports simultaneously, so blocking one does not
+cut the user off; a node may additionally sit behind a CDN:
 
 | Transport | Purpose |
 |---|---|
-| VLESS over WebSocket | baseline |
-| VLESS over XHTTP via CDN | survives direct-connection blocking |
-| VLESS over gRPC | lower handshake latency |
+| VLESS + Reality (TCP) | primary; SNI is the node's own domain, probes see the node's real site |
+| VLESS over XHTTP + TLS | the node's own domain and certificate on 443, through nginx |
 | Hysteria2 (QUIC/UDP) | best for gaming and calls — no TCP-over-TCP head-of-line blocking |
+| VLESS over XHTTP via CDN | only on nodes with a CDN endpoint; survives direct-connection blocking |
+
+Which transports a node offers is defined only by its endpoint rows in the
+database (`vpn_reality_endpoints`, `vpn_xhttp_endpoints`,
+`vpn_hysteria_endpoints`, `vpn_cdn_endpoints`); the code has no built-in list
+of transports or inbound tags. Feed order per node: Reality → XHTTP →
+Hysteria2 → CDN.
 
 Split routing rules travel with the subscription, so domestic traffic bypasses
 the tunnel automatically. Rules are compiled per client family: Xray-based

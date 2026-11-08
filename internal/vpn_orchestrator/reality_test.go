@@ -316,8 +316,8 @@ func TestNoRealityProfileWithoutEndpoint(t *testing.T) {
 }
 
 // flow учётки Reality на узле совпадает с flow в ссылке: Xray отвергает
-// подключение, если они расходятся. Базовый профиль несёт flow WS (пустой) и
-// должен таким остаться — Vision на WS не работает.
+// подключение, если они расходятся. Основной профиль на другом инбаунде
+// сохраняет свой flow (пустой).
 func TestRealityProfileFlowMatchesLink(t *testing.T) {
 	svc := &Service{}
 	for _, flow := range []string{"xtls-rprx-vision", ""} {
@@ -334,7 +334,7 @@ func TestRealityProfileFlowMatchesLink(t *testing.T) {
 				if p.Flow != linkFlow {
 					t.Errorf("flow эндпоинта %q: у учётки %q, в ссылке %q", flow, p.Flow, linkFlow)
 				}
-			case "vless-ws-in":
+			case "vless-main-in":
 				if p.Flow != "" {
 					t.Errorf("flow эндпоинта %q: основной профиль получил flow %q", flow, p.Flow)
 				}

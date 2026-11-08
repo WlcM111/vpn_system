@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -32,6 +33,10 @@ type ServiceConfig struct {
 	DefaultWeight    int           // вес ноды по умолчанию
 	SoftOverflow     bool          // выдавать переполненную ноду вместо отказа
 
+	// TrialServer — единственный сервер/страна, выдаваемый на пробной подписке
+	// (например, "RO" или "ro-main-1"). По умолчанию "RO" (Румыния).
+	TrialServer string
+
 	// CDNQuota — политика лимита CDN-трафика (20 GB на пользователя на ноду).
 	// Выключенная политика полностью сохраняет прежнее поведение.
 	CDNQuota CDNQuotaPolicy
@@ -50,7 +55,7 @@ type SubscriptionFeedResult struct {
 	Access      *AccessState
 
 	// Uplink/Downlink — расход CDN-трафика за текущий период, просуммированный
-	// по узлам. Только CDN: обычный VLESS, gRPC и Hysteria сюда не входят —
+	// по узлам. Только CDN: Reality, XHTTP и Hysteria сюда не входят —
 	// классификация идёт по inbound_tag учётки (см. ApplyNodeTraffic).
 	Uplink   int64
 	Downlink int64
@@ -67,6 +72,23 @@ type SubscriptionFeedResult struct {
 	RoutingB64 string
 }
 
+func resolveTrialServer(configured string) string {
+	v := strings.TrimSpace(configured)
+	if v == "" {
+		v = strings.TrimSpace(os.Getenv("TRIAL_SERVER"))
+	}
+	if v == "" {
+		v = strings.TrimSpace(os.Getenv("TRIAL_SERVER_KEY"))
+	}
+	if v == "" {
+		v = strings.TrimSpace(os.Getenv("TRIAL_COUNTRY_CODE"))
+	}
+	if v == "" {
+		v = "RO"
+	}
+	return v
+}
+
 func NewService(repo *Repository, producer *commonkafka.Producer, cfg ServiceConfig) *Service {
 	cfg.FeedFormat = strings.ToLower(strings.TrimSpace(cfg.FeedFormat))
 	if cfg.FeedFormat == "" {
@@ -75,6 +97,7 @@ func NewService(repo *Repository, producer *commonkafka.Producer, cfg ServiceCon
 	if cfg.NodeHeartbeatTTL <= 0 {
 		cfg.NodeHeartbeatTTL = 90 * time.Second
 	}
+	cfg.TrialServer = resolveTrialServer(cfg.TrialServer)
 	return &Service{
 		repo:      repo,
 		producer:  producer,
@@ -121,9 +144,9 @@ func (s *Service) RenderSubscriptionFeedDetailed(ctx context.Context, token stri
 		return nil, ErrAccessDenied
 	}
 
-	// Строки фида собираются блоками по странам: основной профиль страны и
-	// сразу за ним все альтернативные транспорты ЭТОГО ЖЕ сервера (CDN → gRPC →
-	// Hysteria). Каждая ссылка получает UUID своего сервера — см. feed_builder.go.
+	// Строки фида собираются блоками по серверам: профили эндпоинтов ЭТОГО
+	// сервера (Reality → XHTTP → Hysteria2 → CDN). Каждая ссылка получает UUID
+	// своего сервера — см. feed_builder.go.
 	lines, cdnServers := s.buildGroupedFeedLines(ctx, feedItems)
 	if len(lines) == 0 {
 		return nil, ErrAccessDenied
@@ -180,7 +203,7 @@ func accessAllowed(state *AccessState, now time.Time) bool {
 }
 
 func (s *Service) ensureUserCredentialsAndSyncTx(ctx context.Context, tx pgx.Tx, access *AccessState) ([]FeedItem, error) {
-	items, err := s.selectBalancedItems(ctx, access.TelegramID)
+	items, err := s.selectBalancedItemsForAccess(ctx, access)
 	if err != nil {
 		return nil, err
 	}
@@ -222,16 +245,20 @@ func (s *Service) ensureUserCredentialsAndSync(ctx context.Context, access *Acce
 }
 
 func (s *Service) ensureUserCredentials(ctx context.Context, access *AccessState) ([]FeedItem, error) {
-	items, err := s.selectBalancedItems(ctx, access.TelegramID)
+	items, err := s.selectBalancedItemsForAccess(ctx, access)
 	if err != nil {
 		return nil, err
 	}
 	return s.repo.EnsureCredentialsForItems(ctx, access.TelegramID, access.AccessRev, items)
 }
 
-// selectBalancedItems загружает пул-айтемы и метрики нод, затем через аллокатор
-// выбирает по одному профилю на страну (балансировка внутри страны).
-func (s *Service) selectBalancedItems(ctx context.Context, telegramID int64) ([]PoolItem, error) {
+// selectBalancedItemsForAccess загружает пул-айтемы и метрики нод, затем:
+//  1. Для пробной подписки (status == "trial") ограничивает список одним
+//     сервером/локацией из настроек (TRIAL_SERVER, по умолчанию Румыния "RO").
+//  2. Через аллокатор выбирает по одному профилю на страну.
+//  3. Защищает подписку от массового выпадения стран при блокировке канала
+//     между центром в РФ и зарубежной нодой (PreserveCountriesOnMassDrop).
+func (s *Service) selectBalancedItemsForAccess(ctx context.Context, access *AccessState) ([]PoolItem, error) {
 	items, err := s.repo.ListEnabledPoolItems(ctx)
 	if err != nil {
 		return nil, err
@@ -240,12 +267,29 @@ func (s *Service) selectBalancedItems(ctx context.Context, telegramID int64) ([]
 		return nil, ErrNoPoolItems
 	}
 
+	var telegramID int64
+	isTrial := false
+	if access != nil {
+		telegramID = access.TelegramID
+		isTrial = strings.EqualFold(strings.TrimSpace(access.Status), "trial")
+	}
+
+	if isTrial {
+		items = FilterPoolItemsForTrial(items, resolveTrialServer(s.cfg.TrialServer))
+		if len(items) == 0 {
+			return nil, ErrNoPoolItems
+		}
+	}
+
 	servers, err := s.repo.LoadServersByCountry(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	sticky := func(itemKey string) string {
+		if telegramID == 0 {
+			return ""
+		}
 		sk, err := s.repo.GetUserServerForItem(ctx, telegramID, itemKey)
 		if err != nil {
 			return ""
@@ -253,9 +297,14 @@ func (s *Service) selectBalancedItems(ctx context.Context, telegramID int64) ([]
 		return sk
 	}
 
-	selected := s.allocator.Allocate(items, servers, sticky, time.Now().UTC())
+	// Аллокатор плюс защита от массового выпадения рабочих нод из подписки,
+	// если ТСПУ на стыке с центром временно заблокировал Kafka-heartbeat.
+	selected := s.allocator.AllocateWithMassDropProtection(items, servers, sticky, time.Now().UTC())
 	if len(selected) == 0 {
 		return nil, ErrNoPoolItems
+	}
+	if isTrial && len(selected) > 1 {
+		selected = selected[:1]
 	}
 	return selected, nil
 }
@@ -291,66 +340,78 @@ func buildCDNProfile(base kafkacontracts.VPNNodeUserProfile, serverKey string, c
 }
 
 // buildUserProfiles формирует профили пользователя для одного узла: основной
-// (base) плюс CDN- и gRPC-варианты (Optional=true), если для сервера подобраны
-// соответствующие эндпоинты. Дедуп по (inbound_tag|email). Единый источник
-// логики для publishSyncCommands и publishRevokeCommands (IM-2).
+// (base) плюс профили эндпоинтов этого сервера — Reality, XHTTP и CDN
+// (Optional=true). Какие профили есть у сервера, определяют только его
+// эндпоинты в БД; в коде нет ни списка транспортов, ни тегов инбаундов.
+// Дедуп по (inbound_tag|email). Единый источник логики для publishSyncCommands
+// и publishRevokeCommands (IM-2).
+//
+// Основной профиль совпадает с профилем эндпоинта, когда инбаунд сервера по
+// умолчанию — инбаунд этого эндпоинта (обычно Reality). Тогда остаётся одна
+// запись, а flow берётся у эндпоинта: ссылку собирают из эндпоинта, и Xray
+// отвергает учётку, чей flow расходится с flow клиента.
 //
 // skipCDN=true исключает CDN-профиль из ЖЕЛАЕМОГО состояния. Используется, когда
 // CDN-квота пользователя на этом узле исчерпана: иначе ближайший reconcile
 // вернул бы отключённую учётку обратно. На путь ОТЗЫВА этот флаг не подаётся —
 // снимать надо в том числе и CDN-учётку.
-func (s *Service) buildUserProfiles(base kafkacontracts.VPNNodeUserProfile, serverKey string, cdnEndpoints []CDNEndpoint, grpcEndpoints []GRPCEndpoint, realityEndpoints []RealityEndpoint, skipCDN bool) []kafkacontracts.VPNNodeUserProfile {
-	seen := make(map[string]struct{}, 4)
+func (s *Service) buildUserProfiles(base kafkacontracts.VPNNodeUserProfile, serverKey string, cdnEndpoints []CDNEndpoint, xhttpEndpoints []XHTTPEndpoint, realityEndpoints []RealityEndpoint, skipCDN bool) []kafkacontracts.VPNNodeUserProfile {
+	index := make(map[string]int, 4)
 	out := make([]kafkacontracts.VPNNodeUserProfile, 0, 4)
 	add := func(p kafkacontracts.VPNNodeUserProfile) {
 		key := p.InboundTag + "|" + p.Email
-		if _, ok := seen[key]; ok {
+		if _, ok := index[key]; ok {
 			return
 		}
-		seen[key] = struct{}{}
+		index[key] = len(out)
 		out = append(out, p)
+	}
+	// addEndpoint добавляет профиль эндпоинта; при совпадении с уже
+	// добавленным (основным) профилем переносит в него flow эндпоинта.
+	addEndpoint := func(p kafkacontracts.VPNNodeUserProfile) {
+		if i, ok := index[p.InboundTag+"|"+p.Email]; ok {
+			out[i].Flow = p.Flow
+			return
+		}
+		add(p)
 	}
 
 	add(base)
-
-	if !skipCDN {
-		if cdnProfile, ok := buildCDNProfile(base, serverKey, cdnEndpoints); ok {
-			add(cdnProfile)
-		}
-	}
-
-	// gRPC: регистрируем того же пользователя в gRPC-inbound, чтобы gRPC-ссылка из
-	// фида работала. Optional=true — если на узле нет gRPC-inbound, node-agent
-	// пропустит профиль без провала всей команды (симметрично CDN).
-	if endpoint, ok := selectGRPCForServer(grpcEndpoints, serverKey); ok {
-		grpcInbound := endpoint.InboundTag
-		if grpcInbound == "" {
-			grpcInbound = "vless-grpc-cdn-in"
-		}
-		grpcProfile := base
-		grpcProfile.InboundTag = grpcInbound
-		grpcProfile.Optional = true
-		add(grpcProfile)
-	}
 
 	// Reality: отдельный inbound на своём порту, мимо nginx. Optional=true —
 	// на узлах, где инбаунд ещё не поднят, агент пропустит профиль и не
 	// провалит всю команду синхронизации.
 	if endpoint, ok := selectRealityForServer(realityEndpoints, serverKey); ok {
-		realityInbound := endpoint.InboundTag
-		if realityInbound == "" {
-			realityInbound = "vless-reality-in"
+		if inbound := strings.TrimSpace(endpoint.InboundTag); inbound != "" {
+			realityProfile := base
+			realityProfile.InboundTag = inbound
+			// flow учётки на узле обязан совпадать с flow в ссылке, которую
+			// BuildRealityVLESSURLFromEndpoint собирает из этого же эндпоинта:
+			// Xray при расхождении отвергает подключение ("account … is not
+			// able to use the flow xtls-rprx-vision").
+			realityProfile.Flow = strings.TrimSpace(endpoint.Flow)
+			realityProfile.Optional = true
+			addEndpoint(realityProfile)
 		}
-		realityProfile := base
-		realityProfile.InboundTag = realityInbound
-		// flow учётки на узле обязан совпадать с flow в ссылке, которую
-		// BuildRealityVLESSURLFromEndpoint собирает из этого же эндпоинта. base
-		// несёт flow основного профиля (у WS он пустой), а Xray при расхождении
-		// отвергает подключение: "account … is not able to use the flow
-		// xtls-rprx-vision".
-		realityProfile.Flow = strings.TrimSpace(endpoint.Flow)
-		realityProfile.Optional = true
-		add(realityProfile)
+	}
+
+	// XHTTP: та же учётка в XHTTP-инбаунде ноды (за nginx). flow пустой —
+	// xtls-rprx-vision поверх XHTTP не работает. Optional=true: нода, где
+	// инбаунд ещё не поднят, пропустит профиль, не провалив команду.
+	if endpoint, ok := selectXHTTPForServer(xhttpEndpoints, serverKey); ok {
+		if inbound := strings.TrimSpace(endpoint.InboundTag); inbound != "" {
+			xhttpProfile := base
+			xhttpProfile.InboundTag = inbound
+			xhttpProfile.Flow = ""
+			xhttpProfile.Optional = true
+			addEndpoint(xhttpProfile)
+		}
+	}
+
+	if !skipCDN {
+		if cdnProfile, ok := buildCDNProfile(base, serverKey, cdnEndpoints); ok {
+			add(cdnProfile)
+		}
 	}
 
 	return out
@@ -376,7 +437,7 @@ func (s *Service) publishSyncCommands(ctx context.Context, tx pgx.Tx, access *Ac
 	// куда регистрируется пользователь, обязан совпадать с набором ссылок, которые
 	// он получит. Разъезд здесь = ссылка есть, а UUID на узле не заведён.
 	cdnEndpoints := s.loadCDNEndpoints(ctx)
-	grpcEndpoints := s.loadGRPCEndpoints(ctx)
+	xhttpEndpoints := s.loadXHTTPEndpoints(ctx)
 	realityEndpoints := s.loadRealityEndpoints(ctx)
 
 	// Узлы, где CDN-квота пользователя исчерпана: их CDN-профиль в желаемое
@@ -408,7 +469,7 @@ func (s *Service) publishSyncCommands(ctx context.Context, tx pgx.Tx, access *Ac
 				Level:       item.PoolItem.Level,
 				AccessUntil: access.AccessUntil,
 			}
-			profiles = append(profiles, s.buildUserProfiles(base, item.PoolItem.ServerKey, cdnEndpoints, grpcEndpoints, realityEndpoints, skipCDN)...)
+			profiles = append(profiles, s.buildUserProfiles(base, item.PoolItem.ServerKey, cdnEndpoints, xhttpEndpoints, realityEndpoints, skipCDN)...)
 		}
 
 		cmd := kafkacontracts.NodeSyncUserCommand{
@@ -459,7 +520,7 @@ func (s *Service) publishRevokeCommands(ctx context.Context, tx pgx.Tx, telegram
 	// из всех inbound'ов, куда пользователь был заведён, иначе на узле остаётся
 	// активный UUID после потери доступа.
 	revokeCDNEndpoints := s.loadCDNEndpoints(ctx)
-	revokeGRPCEndpoints := s.loadGRPCEndpoints(ctx)
+	revokeXHTTPEndpoints := s.loadXHTTPEndpoints(ctx)
 	revokeRealityEndpoints := s.loadRealityEndpoints(ctx)
 
 	for nodeID, nodeCreds := range byNode {
@@ -473,7 +534,7 @@ func (s *Service) publishRevokeCommands(ctx context.Context, tx pgx.Tx, telegram
 			}
 			// Отзыв: CDN-профиль включаем всегда (skipCDN=false) — иначе на узле
 			// осталась бы активная CDN-учётка отозванного пользователя.
-			profiles = append(profiles, s.buildUserProfiles(base, cred.ServerKey, revokeCDNEndpoints, revokeGRPCEndpoints, revokeRealityEndpoints, false)...)
+			profiles = append(profiles, s.buildUserProfiles(base, cred.ServerKey, revokeCDNEndpoints, revokeXHTTPEndpoints, revokeRealityEndpoints, false)...)
 		}
 
 		cmd := kafkacontracts.NodeRevokeUserCommand{

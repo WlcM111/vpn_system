@@ -41,7 +41,7 @@ services:
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:19092
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://${PUBLIC_DOMAIN:?PUBLIC_DOMAIN is required}:19092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:${KAFKA_EXTERNAL_PROTOCOL:-PLAINTEXT}
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
@@ -52,6 +52,24 @@ services:
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_LOG_DIRS: /var/lib/kafka/data
       CLUSTER_ID: vpn-platform-kafka-cluster
+      KAFKA_EXTERNAL_PROTOCOL: ${KAFKA_EXTERNAL_PROTOCOL:-PLAINTEXT}
+      KAFKA_SSL_PASSWORD: ${KAFKA_SSL_PASSWORD:-}
+      KAFKA_SSL_CLIENT_AUTH: ${KAFKA_SSL_CLIENT_AUTH:-required}
+    command:
+      - /bin/sh
+      - -c
+      - |
+        if [ "$${KAFKA_EXTERNAL_PROTOCOL:-PLAINTEXT}" = "SSL" ]; then
+          export KAFKA_SSL_KEYSTORE_TYPE=PKCS12
+          export KAFKA_SSL_KEYSTORE_LOCATION=/etc/kafka/secrets/kafka.server.keystore.p12
+          export KAFKA_SSL_KEYSTORE_PASSWORD="$${KAFKA_SSL_PASSWORD}"
+          export KAFKA_SSL_KEY_PASSWORD="$${KAFKA_SSL_PASSWORD}"
+          export KAFKA_SSL_TRUSTSTORE_TYPE=PKCS12
+          export KAFKA_SSL_TRUSTSTORE_LOCATION=/etc/kafka/secrets/kafka.server.truststore.p12
+          export KAFKA_SSL_TRUSTSTORE_PASSWORD="$${KAFKA_SSL_PASSWORD}"
+          export KAFKA_SSL_CLIENT_AUTH="$${KAFKA_SSL_CLIENT_AUTH:-required}"
+        fi
+        exec /etc/kafka/docker/run
     ports:
       - "127.0.0.1:9092:9092"
       - "19092:19092"
@@ -62,6 +80,7 @@ services:
       retries: 30
     volumes:
       - kafka_data:/var/lib/kafka/data
+      - ${KAFKA_TLS_DIR:-/var/tmp}:/etc/kafka/secrets:ro
 
   kafka-init:
     image: apache/kafka:3.9.1
@@ -138,6 +157,7 @@ services:
       YOOKASSA_ENFORCE_IP_CHECK: ${YOOKASSA_ENFORCE_IP_CHECK:-false}
       # Platega («Способ 1 - рекомендуемый»). Пустые ключи — способ 1 сообщает
       # о недоступности, YooKassa работает как раньше.
+      PLATEGA_ENABLED: ${PLATEGA_ENABLED:-}
       PLATEGA_MERCHANT_ID: ${PLATEGA_MERCHANT_ID:-}
       PLATEGA_SECRET: ${PLATEGA_SECRET:-}
       PLATEGA_API_BASE: ${PLATEGA_API_BASE:-https://app.platega.io}
@@ -197,7 +217,7 @@ services:
       USER_SUBSCRIPTION_HTTP_ADDR: :8083
       METRICS_ADDR: :9090
       SUBSCRIPTION_PUBLIC_BASE_URL: ${SUBSCRIPTION_PUBLIC_BASE_URL:-http://localhost:8084/sub/}
-      SUBSCRIPTION_DEFAULT_COUNTRY: ${SUBSCRIPTION_DEFAULT_COUNTRY:-LT}
+      SUBSCRIPTION_DEFAULT_COUNTRY: ${SUBSCRIPTION_DEFAULT_COUNTRY:-RO}
       CONSUMER_WORKERS: ${CONSUMER_WORKERS:-3}
       OUTBOX_BATCH_SIZE: ${OUTBOX_BATCH_SIZE:-100}
       KAFKA_FETCH_MIN_BYTES: ${KAFKA_FETCH_MIN_BYTES:-1}
@@ -234,6 +254,7 @@ services:
       NODE_DEFAULT_MAX_USERS: ${NODE_DEFAULT_MAX_USERS:-400}
       NODE_DEFAULT_WEIGHT: ${NODE_DEFAULT_WEIGHT:-100}
       BALANCER_SOFT_OVERFLOW: ${BALANCER_SOFT_OVERFLOW:-true}
+      TRIAL_SERVER: ${TRIAL_SERVER:-RO}
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       KAFKA_BROKERS: kafka:9092
       REDIS_ADDR: redis:6379
@@ -243,7 +264,7 @@ services:
       SUBSCRIPTION_RATE_LIMIT_PER_MINUTE: ${SUBSCRIPTION_RATE_LIMIT_PER_MINUTE:-30}
       ORCHESTRATOR_ADMIN_USER: ${ORCHESTRATOR_ADMIN_USER:-admin}
       ORCHESTRATOR_ADMIN_PASS: ${ORCHESTRATOR_ADMIN_PASS:-}
-      CDN_CONFIG_ENABLED: ${CDN_CONFIG_ENABLED:-false}
+      CDN_CONFIG_ENABLED: ${CDN_CONFIG_ENABLED:-true}
       ROUTING_MANIFEST_PATH: ${ROUTING_MANIFEST_PATH:-/app/routing/routing-manifest.json}
       CDN_QUOTA_ENABLED: ${CDN_QUOTA_ENABLED:-false}
       CDN_QUOTA_ENFORCE: ${CDN_QUOTA_ENFORCE:-false}
@@ -253,30 +274,12 @@ services:
       CDN_QUOTA_WORKER_INTERVAL: ${CDN_QUOTA_WORKER_INTERVAL:-5m}
       CDN_QUOTA_RESET_BATCH_SIZE: ${CDN_QUOTA_RESET_BATCH_SIZE:-500}
       SUBSCRIPTION_RENEW_URL: ${SUBSCRIPTION_RENEW_URL:-https://t.me/vpn_house_bot}
-      GRPC_CONFIG_ENABLED: ${GRPC_CONFIG_ENABLED:-false}
-      HYSTERIA_CONFIG_ENABLED: ${HYSTERIA_CONFIG_ENABLED:-false}
-      # Рубильник Reality. По умолчанию true, а не false как у остальных:
-      # у Reality нет env-фолбэка, эндпоинты берутся только из таблицы
-      # vpn_reality_endpoints, и пустая таблица сама означает «не настроен».
-      # Переменная нужна, чтобы выключить транспорт при инциденте без
-      # отката кода.
+      # Транспорты нод: ссылки и учётки строятся только из эндпоинтов в БД
+      # (vpn_reality_endpoints, vpn_xhttp_endpoints, vpn_hysteria_endpoints,
+      # vpn_cdn_endpoints). Рубильники ниже выключают транспорт целиком.
+      HYSTERIA_CONFIG_ENABLED: ${HYSTERIA_CONFIG_ENABLED:-true}
       REALITY_CONFIG_ENABLED: ${REALITY_CONFIG_ENABLED:-true}
-      HYSTERIA_ADDRESS: ${HYSTERIA_ADDRESS:-}
-      HYSTERIA_PORT: ${HYSTERIA_PORT:-443}
-      HYSTERIA_SNI: ${HYSTERIA_SNI:-}
-      HYSTERIA_SERVER_KEY: ${HYSTERIA_SERVER_KEY:-}
-      HYSTERIA_INSECURE: ${HYSTERIA_INSECURE:-false}
-      HYSTERIA_REMARKS: ${HYSTERIA_REMARKS:-Hysteria}
-      GRPC_ADDRESS: ${GRPC_ADDRESS:-}
-      GRPC_PORT: ${GRPC_PORT:-443}
-      GRPC_SERVER_NAME: ${GRPC_SERVER_NAME:-}
-      GRPC_HOST: ${GRPC_HOST:-}
-      GRPC_SERVICE_NAME: ${GRPC_SERVICE_NAME:-api.grpc}
-      GRPC_MODE: ${GRPC_MODE:-gun}
-      GRPC_INBOUND_TAG: ${GRPC_INBOUND_TAG:-vless-grpc-cdn-in}
-      GRPC_FINGERPRINT: ${GRPC_FINGERPRINT:-chrome}
-      GRPC_ALPN: ${GRPC_ALPN:-h2}
-      GRPC_REMARKS: ${GRPC_REMARKS:-race-src-grpc}
+      XHTTP_CONFIG_ENABLED: ${XHTTP_CONFIG_ENABLED:-true}
       CONSUMER_WORKERS: ${CONSUMER_WORKERS:-3}
       OUTBOX_BATCH_SIZE: ${OUTBOX_BATCH_SIZE:-100}
       KAFKA_FETCH_MIN_BYTES: ${KAFKA_FETCH_MIN_BYTES:-1}
@@ -299,6 +302,7 @@ services:
     ports:
       - "127.0.0.1:8084:8084"
       - "127.0.0.1:19084:9090"
+
   crypto-billing-service:
     build:
       context: ..
@@ -343,7 +347,7 @@ services:
     ports:
       - "127.0.0.1:8086:8086"
       - "127.0.0.1:19086:9090"
-      
+
   tg-bot-gateway:
     build:
       context: ..
@@ -382,7 +386,12 @@ services:
       METRICS_ADDR: :9090
       BROADCAST_TOKEN: ${BROADCAST_TOKEN:-}
       BROADCAST_HTTP_ADDR: ${BROADCAST_HTTP_ADDR:-:8087}
-      # Ключи платёжных провайдеров боту не передаются: счета создаёт billing.
+      # Проверка доступности «Способ 1 - рекомендуемый» (Platega) прямо в боте:
+      # рубильник и ID мерчанта (не секрет). API-ключ боту не передаётся —
+      # счета создаёт billing, и при неполных ключах он сам сообщит о
+      # недоступности способа.
+      PLATEGA_ENABLED: ${PLATEGA_ENABLED:-}
+      PLATEGA_MERCHANT_ID: ${PLATEGA_MERCHANT_ID:-}
       PLAN_MONTHLY_PRICE_RUB: ${PLAN_MONTHLY_PRICE_RUB:-89.00}
       PLAN_QUARTERLY_PRICE_RUB: ${PLAN_QUARTERLY_PRICE_RUB:-249.00}
       PLAN_SEMIANNUAL_PRICE_RUB: ${PLAN_SEMIANNUAL_PRICE_RUB:-439.00}
@@ -396,7 +405,7 @@ services:
       - "127.0.0.1:8085:8085"
       - "127.0.0.1:19085:9090"
       - "127.0.0.1:8087:8087"
-  
+
   prometheus:
     image: prom/prometheus:v2.55.1
     container_name: vpn-platform-prometheus
@@ -422,9 +431,6 @@ services:
     container_name: vpn-platform-alertmanager
     restart: unless-stopped
     environment:
-      # С центрального сервера api.telegram.org недоступен напрямую:
-      # прямое обращение завершается connection timed out. Уведомления
-      # идут через тот же исходящий прокси, что и основной бот.
       HTTPS_PROXY: ${TG_HTTPS_PROXY:-}
       HTTP_PROXY: ${TG_HTTPS_PROXY:-}
       NO_PROXY: localhost,127.0.0.1,vpn-platform-prometheus,prometheus,vpn-platform-alertmanager

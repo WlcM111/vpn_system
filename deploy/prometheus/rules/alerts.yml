@@ -2,9 +2,6 @@ groups:
   - name: money
     interval: 30s
     rules:
-      # Сообщение ушло в dead-letter — обработка провалилась 20 раз подряд.
-      # Для billing.events это подтверждённый платёж, который не превратился
-      # в подписку. Реагировать надо в течение минут, а не суток.
       - alert: KafkaMessageInDLT
         expr: increase(vpn_platform_kafka_consumed_total{status="dlt"}[10m]) > 0
         for: 0m
@@ -21,10 +18,6 @@ groups:
             localhost:9092 --topic {{ $labels.topic }}.dlt --from-beginning
             --max-messages 5 --timeout-ms 10000
 
-      # Платёж принят провайдером, но подписка не активирована. Оба счётчика
-      # process-local, поэтому сравниваем приросты за час, а не абсолютные
-      # значения: рестарт сервиса не даёт ложного срабатывания.
-      # Сравниваются только успешные платежи и применённые активации.
       - alert: PaymentWithoutActivation
         expr: >-
           sum(increase(vpn_platform_billing_payments_total{outcome="succeeded"}[1h]))
@@ -44,8 +37,6 @@ groups:
             WHERE p.status='succeeded'
             AND p.checkout_type='subscription_purchase' AND g.id IS NULL;
 
-      # Событие в outbox не удалось опубликовать после всех попыток.
-      # Значит изменение состояния произошло, а downstream о нём не узнал.
       - alert: OutboxEventsFailed
         expr: vpn_platform_outbox_failed_total > 0
         for: 5m
@@ -57,9 +48,6 @@ groups:
             В event_outbox {{ $value | printf "%.0f" }} событий со статусом
             failed. Они не доехали до Kafka.
 
-      # Platega: сверка оплат просрочена — воркер не работает или API
-      # Platega недоступно. Колбэки Platega повторяет лишь несколько раз,
-      # поэтому сверка — единственная гарантия, что оплата не потеряется.
       - alert: PlategaChecksOverdue
         expr: vpn_platform_billing_platega_overdue_checks > 0
         for: 15m
@@ -85,8 +73,6 @@ groups:
           description: >-
             Последний проход воркера сверки Platega был более 5 минут назад.
 
-      # Заказы, требующие решения человека: несовпадение суммы/валюты,
-      # спор, чарджбэк, частичный возврат.
       - alert: PlategaPaymentNeedsReview
         expr: sum(vpn_platform_billing_platega_payments{status=~"review_required|disputed|chargebacked|partially_refunded"}) > 0
         for: 5m
@@ -101,7 +87,6 @@ groups:
             FROM payments WHERE provider='platega'
             AND status IN ('review_required','disputed','chargebacked','partially_refunded');
 
-      # Platega отказывает в создании счетов или не отвечает.
       - alert: PlategaCreateFailing
         expr: sum(increase(vpn_platform_billing_platega_requests_total{op="create",result=~"rejected|ambiguous"}[15m])) > 2
         for: 0m
@@ -114,8 +99,6 @@ groups:
             создать счёт. Пользователям предлагается «Способ 2». Частая
             причина — неверные PLATEGA_MERCHANT_ID / PLATEGA_SECRET.
 
-      # Колбэки с неверными ключами: ключ в .env не совпадает с ЛК Platega
-      # или кто-то перебирает адрес колбэка.
       - alert: PlategaCallbackUnauthorized
         expr: sum(increase(vpn_platform_billing_platega_callbacks_total{result="unauthorized"}[30m])) > 3
         for: 0m
@@ -130,8 +113,6 @@ groups:
   - name: pipeline
     interval: 30s
     rules:
-      # Консьюмер не успевает или застрял на сообщении. Порог намеренно
-      # невысокий: при штатной нагрузке лаг держится около нуля.
       - alert: KafkaConsumerLagHigh
         expr: vpn_platform_kafka_consumer_lag > 50
         for: 10m
@@ -144,8 +125,6 @@ groups:
             партиция {{ $labels.partition }}: отставание
             {{ $value | printf "%.0f" }} сообщений держится 10 минут.
 
-      # Лаг не растёт, но и не убывает — характерный признак сообщения,
-      # которое обрабатывается по кругу и не коммитится.
       - alert: KafkaConsumerLagStuck
         expr: min_over_time(vpn_platform_kafka_consumer_lag[30m]) > 0
         for: 30m
@@ -158,9 +137,6 @@ groups:
             держит ненулевое отставание уже полчаса. Вероятно, консьюмер
             зациклился на одном сообщении.
 
-      # События, захваченные публикатором и не отмеченные результатом.
-      # С арендой (platform/0011) они перезахватываются через 2 минуты;
-      # долго висящие — это строки, застрявшие до миграции (locked_at IS NULL).
       - alert: OutboxStuckProcessing
         expr: vpn_platform_outbox_depth{status="processing"} > 0
         for: 15m
@@ -173,7 +149,6 @@ groups:
             15 минут. SELECT id, topic, event_type, created_at FROM event_outbox
             WHERE status='processing' ORDER BY id LIMIT 20;
 
-      # Очередь публикации растёт: publisher не успевает или Kafka недоступна.
       - alert: OutboxDepthGrowing
         expr: sum(vpn_platform_outbox_depth{status=~"pending|retry"}) > 100
         for: 10m
@@ -188,10 +163,6 @@ groups:
   - name: infrastructure
     interval: 30s
     rules:
-      # Backup не создавался дольше суток с запасом. Метрика пишется скриптом
-      # vpn-backup.sh через textfile collector node_exporter. Если node_exporter
-      # не установлен, метрики не будет и алерт не сработает — это отдельный
-      # риск, отмеченный в конце гайда.
       - alert: BackupMissing
         expr: time() - vpn_backup_last_success_timestamp_seconds > 108000
         for: 30m
@@ -203,9 +174,7 @@ groups:
             Последний успешный backup был
             {{ $value | humanizeDuration }} назад. Проверить:
             journalctl -u vpn-backup.service -n 50
-            # У узла не задана полоса канала. Следствия два: на дашборде канал
-      # всегда нулевой, и балансировщик считает узел свободным, даже когда
-      # канал забит — новые пользователи продолжают на него распределяться.
+
       - alert: NodeBandwidthNotConfigured
         expr: vpn_platform_node_bandwidth_configured == 0
         for: 1h
@@ -220,19 +189,37 @@ groups:
             UPDATE vpn_servers SET bandwidth_mbps = <Мбит/с>
             WHERE server_key = '{{ $labels.server_key }}';
 
-      # Нода не шлёт heartbeat. Пользователи на ней теряют доступ.
+      # Нода жива (есть либо Kafka-heartbeat, либо ответ VPN-порта по TCP),
+      # но один из каналов между РФ-центром и нодой заблокирован (ТСПУ).
+      # Узел НЕ исключается из подписок пользователей.
+      - alert: NodeBlocked
+        expr: vpn_platform_node_blocked == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Маршрут к ноде {{ $labels.title }} частично заблокирован (нода жива)"
+          description: >-
+            Узел {{ $labels.server_key }} ({{ $labels.country }}) продолжает
+            работать и сохранён в подписке пользователей, но один из каналов
+            между центром и нодой (Kafka heartbeat либо прямой TCP-пробник)
+            недоступен более 5 минут. Проверьте метрику
+            vpn_platform_node_health_state{server_key="{{ $labels.server_key }}"}
+            (blocked_dataplane / blocked_controlplane).
+
+      # Нода полностью недоступна: не присылает Kafka-heartbeat И не отвечает
+      # по TCP на VPN-портах.
       - alert: NodeDown
         expr: vpn_platform_node_up == 0
         for: 5m
         labels:
           severity: critical
         annotations:
-          summary: "Нода {{ $labels.title }} не отвечает"
+          summary: "Нода {{ $labels.title }} полностью упала"
           description: >-
             {{ $labels.server_key }} ({{ $labels.country }}) не присылает
-            heartbeat более 5 минут.
+            heartbeat и не отвечает на TCP-проверку VPN-портов более 5 минут.
 
-      # Сервис перестал отдавать метрики: упал, завис или потерял сеть.
       - alert: ServiceDown
         expr: up{job="vpn-platform-services"} == 0
         for: 3m
@@ -244,7 +231,6 @@ groups:
             Prometheus не может собрать метрики с {{ $labels.service }}
             уже 3 минуты.
 
-      # Ожидания блокировок в Postgres: споры за горячие строки.
       - alert: PostgresLockWaits
         expr: vpn_platform_postgres_lock_waits > 5
         for: 5m

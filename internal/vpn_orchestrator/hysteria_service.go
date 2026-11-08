@@ -13,15 +13,14 @@ import (
 // паролем выступает VLESS-UUID пользователя. Именно поэтому привязка эндпоинта
 // к server_key критична: агент ищет UUID только в состоянии СВОЕЙ ноды.
 //
-// Источник — таблица vpn_hysteria_endpoints; при пустой таблице работает
-// env-фолбэк (HYSTERIA_ADDRESS + HYSTERIA_SERVER_KEY).
+// Источник — таблица vpn_hysteria_endpoints.
 // ============================================================================
 
 // loadHysteriaEndpoints отдаёт включённые Hysteria-эндпоинты с учётом
-// рубильника HYSTERIA_CONFIG_ENABLED и env-фолбэка.
+// рубильника HYSTERIA_CONFIG_ENABLED.
 //
-// Ошибка чтения таблицы даёт пустой список, а не фолбэк: недоступность БД не
-// должна подменять настройки таблицы переменными окружения (как у gRPC).
+// Ошибка чтения таблицы даёт пустой список: фид собирается без Hysteria-строк,
+// остальные транспорты работают.
 func (s *Service) loadHysteriaEndpoints(ctx context.Context) []HysteriaEndpoint {
 	if !hysteriaConfigEnabled() {
 		return nil
@@ -31,24 +30,12 @@ func (s *Service) loadHysteriaEndpoints(ctx context.Context) []HysteriaEndpoint 
 		slog.Error("load hysteria endpoints failed", "err", err)
 		return nil
 	}
-	return hysteriaEndpointsForIssue(rows, hysteriaEndpointFromEnv)
+	return hysteriaEndpointsForIssue(rows)
 }
 
 // hysteriaEndpointsForIssue оставляет из строк таблицы только включённые.
-//
-// Env-фолбэк (HYSTERIA_ADDRESS) применяется только к ПУСТОЙ таблице, как и
-// описано в шапке файла. Строка с enabled = FALSE означает «на этом сервере
-// Hysteria выключена», и окружение не должно отменять это решение. Раньше
-// фолбэк срабатывал, когда не находилось ни одной включённой строки (и при
-// ошибке чтения), поэтому выключение всех строк возвращало в подписку
-// эндпоинт из окружения (дефект D11; для gRPC то же исправлено ранее).
-func hysteriaEndpointsForIssue(rows []HysteriaEndpoint, fromEnv func() (HysteriaEndpoint, bool)) []HysteriaEndpoint {
-	if len(rows) == 0 {
-		if e, ok := fromEnv(); ok {
-			return []HysteriaEndpoint{e}
-		}
-		return nil
-	}
+// Строка с enabled = FALSE означает «на этом сервере Hysteria выключена».
+func hysteriaEndpointsForIssue(rows []HysteriaEndpoint) []HysteriaEndpoint {
 	out := make([]HysteriaEndpoint, 0, len(rows))
 	for _, e := range rows {
 		if e.Enabled {

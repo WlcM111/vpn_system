@@ -14,12 +14,12 @@ func (h *HTTPHandlers) RegisterAdmin(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/pool-items", h.withAdminAuth(h.handleAdminPoolItems))
 	mux.HandleFunc("/admin/cdn-endpoints", h.withAdminAuth(h.handleAdminCDNEndpoints))
 	mux.HandleFunc("/admin/cdn-endpoints/", h.withAdminAuth(h.handleAdminCDNEndpointByKey))
-	mux.HandleFunc("/admin/grpc-endpoints", h.withAdminAuth(h.handleAdminGRPCEndpoints))
-	mux.HandleFunc("/admin/grpc-endpoints/", h.withAdminAuth(h.handleAdminGRPCEndpointByKey))
 	mux.HandleFunc("/admin/hysteria-endpoints", h.withAdminAuth(h.handleAdminHysteriaEndpoints))
 	mux.HandleFunc("/admin/hysteria-endpoints/", h.withAdminAuth(h.handleAdminHysteriaEndpointByKey))
 	mux.HandleFunc("/admin/reality-endpoints", h.withAdminAuth(h.handleAdminRealityEndpoints))
 	mux.HandleFunc("/admin/reality-endpoints/", h.withAdminAuth(h.handleAdminRealityEndpointByKey))
+	mux.HandleFunc("/admin/xhttp-endpoints", h.withAdminAuth(h.handleAdminXHTTPEndpoints))
+	mux.HandleFunc("/admin/xhttp-endpoints/", h.withAdminAuth(h.handleAdminXHTTPEndpointByKey))
 	mux.HandleFunc("/admin/users/", h.withAdminAuth(h.handleAdminUserActions))
 }
 
@@ -168,46 +168,6 @@ func (h *HTTPHandlers) handleAdminCDNEndpointByKey(w http.ResponseWriter, r *htt
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleAdminGRPCEndpoints — создание/обновление gRPC-эндпоинта (POST).
-func (h *HTTPHandlers) handleAdminGRPCEndpoints(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var req AdminGRPCEndpointRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad json", http.StatusBadRequest)
-		return
-	}
-	if strings.TrimSpace(req.GRPCKey) == "" || strings.TrimSpace(req.Address) == "" {
-		http.Error(w, "grpc_key and address are required", http.StatusBadRequest)
-		return
-	}
-	if err := h.service.repo.UpsertAdminGRPCEndpoint(r.Context(), req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// handleAdminGRPCEndpointByKey — удаление gRPC-эндпоинта по ключу (DELETE).
-func (h *HTTPHandlers) handleAdminGRPCEndpointByKey(w http.ResponseWriter, r *http.Request) {
-	grpcKey := strings.Trim(strings.TrimPrefix(r.URL.Path, "/admin/grpc-endpoints/"), "/")
-	if grpcKey == "" {
-		http.Error(w, "grpc_key required", http.StatusBadRequest)
-		return
-	}
-	if r.Method != http.MethodDelete {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if err := h.service.repo.DeleteGRPCEndpoint(r.Context(), grpcKey); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
 // handleAdminHysteriaEndpoints — создание/обновление Hysteria-эндпоинта (POST).
 func (h *HTTPHandlers) handleAdminHysteriaEndpoints(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -254,9 +214,10 @@ func (h *HTTPHandlers) handleAdminHysteriaEndpointByKey(w http.ResponseWriter, r
 
 // handleAdminRealityEndpoints создаёт или обновляет Reality-эндпоинт.
 //
-// Проверяются четыре обязательных поля, а не два, как у остальных транспортов:
+// Проверяются пять обязательных полей, а не два, как у остальных транспортов:
 // без public_key и server_name сборщик ссылки вернёт пустую строку, и ошибка
-// всплывёт молча — у пользователя просто не появится профиль.
+// всплывёт молча — у пользователя просто не появится профиль; без inbound_tag
+// пользователя некуда зарегистрировать на ноде (тега по умолчанию нет).
 func (h *HTTPHandlers) handleAdminRealityEndpoints(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -273,6 +234,10 @@ func (h *HTTPHandlers) handleAdminRealityEndpoints(w http.ResponseWriter, r *htt
 	}
 	if strings.TrimSpace(req.PublicKey) == "" || strings.TrimSpace(req.ServerName) == "" {
 		http.Error(w, "public_key and server_name are required", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.InboundTag) == "" {
+		http.Error(w, "inbound_tag is required: it must match the inbound tag in the node's Xray config", http.StatusBadRequest)
 		return
 	}
 	if err := h.service.repo.UpsertAdminRealityEndpoint(r.Context(), req); err != nil {
@@ -294,6 +259,62 @@ func (h *HTTPHandlers) handleAdminRealityEndpointByKey(w http.ResponseWriter, r 
 		return
 	}
 	if err := h.service.repo.DeleteRealityEndpoint(r.Context(), realityKey); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAdminXHTTPEndpoints создаёт или обновляет XHTTP-эндпоинт (POST).
+//
+// Обязательны xhttp_key, server_key, inbound_tag, address и path: без любого
+// из них эндпоинт либо не выберется для сервера, либо даст нерабочую ссылку.
+func (h *HTTPHandlers) handleAdminXHTTPEndpoints(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req AdminXHTTPEndpointRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	req.XHTTPKey = strings.TrimSpace(req.XHTTPKey)
+	req.ServerKey = strings.TrimSpace(req.ServerKey)
+	req.InboundTag = strings.TrimSpace(req.InboundTag)
+	req.Address = strings.TrimSpace(req.Address)
+	req.Path = strings.TrimSpace(req.Path)
+	if req.XHTTPKey == "" || req.ServerKey == "" {
+		http.Error(w, "xhttp_key and server_key are required", http.StatusBadRequest)
+		return
+	}
+	if req.InboundTag == "" || req.Address == "" {
+		http.Error(w, "inbound_tag and address are required", http.StatusBadRequest)
+		return
+	}
+	if !strings.HasPrefix(req.Path, "/") {
+		http.Error(w, "path is required and must start with /", http.StatusBadRequest)
+		return
+	}
+	if err := h.service.repo.UpsertAdminXHTTPEndpoint(r.Context(), req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAdminXHTTPEndpointByKey удаляет XHTTP-эндпоинт по xhttp_key (DELETE).
+func (h *HTTPHandlers) handleAdminXHTTPEndpointByKey(w http.ResponseWriter, r *http.Request) {
+	xhttpKey := strings.Trim(strings.TrimPrefix(r.URL.Path, "/admin/xhttp-endpoints/"), "/")
+	if xhttpKey == "" {
+		http.Error(w, "xhttp_key required", http.StatusBadRequest)
+		return
+	}
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := h.service.repo.DeleteXHTTPEndpoint(r.Context(), xhttpKey); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

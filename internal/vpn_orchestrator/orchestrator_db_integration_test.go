@@ -111,10 +111,10 @@ func TestSummarizeQuotasWithAndWithoutStaleThreshold(t *testing.T) {
 	}
 }
 
-// Дефект D11 на реальной БД: строка Hysteria выключена оператором, но при
-// заданном HYSTERIA_ADDRESS того же сервера подписка не должна получать
-// эндпоинт из окружения. Пустая таблица по-прежнему использует окружение.
-func TestDisabledHysteriaRowIsNotReplacedByEnv(t *testing.T) {
+// Hysteria на реальной БД: эндпоинты берутся только из таблицы. Окружение
+// (HYSTERIA_ADDRESS) их не добавляет ни к пустой таблице, ни на месте
+// выключенной строки.
+func TestHysteriaEndpointsComeOnlyFromTable(t *testing.T) {
 	ctx := context.Background()
 	pool := startOrchestratorDB(t)
 	repo := NewRepository(pool)
@@ -123,8 +123,8 @@ func TestDisabledHysteriaRowIsNotReplacedByEnv(t *testing.T) {
 	t.Setenv("HYSTERIA_ADDRESS", "env.example")
 	t.Setenv("HYSTERIA_SERVER_KEY", "lt-1")
 
-	if got := svc.loadHysteriaEndpoints(ctx); len(got) != 1 || got[0].HysteriaKey != "env" {
-		t.Fatalf("пустая таблица: %+v, ожидался env-эндпоинт", got)
+	if got := svc.loadHysteriaEndpoints(ctx); len(got) != 0 {
+		t.Fatalf("пустая таблица: %+v, ожидалось пусто", got)
 	}
 	if err := repo.UpsertAdminNode(ctx, AdminNodeRequest{ServerKey: "lt-1", NodeID: "node-lt", PublicHost: "lt.example"}); err != nil {
 		t.Fatal(err)
@@ -137,5 +137,127 @@ func TestDisabledHysteriaRowIsNotReplacedByEnv(t *testing.T) {
 	}
 	if got := svc.loadHysteriaEndpoints(ctx); len(got) != 0 {
 		t.Fatalf("строка выключена, но к выдаче: %+v", got)
+	}
+	on := true
+	if err := repo.UpsertAdminHysteriaEndpoint(ctx, AdminHysteriaEndpointRequest{
+		HysteriaKey: "lt-hy", ServerKey: "lt-1", Enabled: &on, Address: "lt.example",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.loadHysteriaEndpoints(ctx); len(got) != 1 || got[0].HysteriaKey != "lt-hy" {
+		t.Fatalf("строка включена: %+v, ожидался lt-hy", got)
+	}
+}
+
+// Миграция 0022 и XHTTP-эндпоинты на реальной БД: запись, чтение только
+// включённых, удаление; ограничения таблицы не пускают строку без инбаунда и
+// с путём не от корня.
+func TestXHTTPEndpointsRepository(t *testing.T) {
+	ctx := context.Background()
+	pool := startOrchestratorDB(t)
+	repo := NewRepository(pool)
+	svc := &Service{repo: repo}
+
+	if err := repo.UpsertAdminNode(ctx, AdminNodeRequest{ServerKey: "ro-1", NodeID: "node-ro", PublicHost: "ro.example"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpsertAdminXHTTPEndpoint(ctx, AdminXHTTPEndpointRequest{
+		XHTTPKey: "ro-1-xhttp", ServerKey: "ro-1", InboundTag: "vless-xhttp-in",
+		Address: "ro.example", Path: "/p1", Remarks: "RO XHTTP",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	off := false
+	if err := repo.UpsertAdminXHTTPEndpoint(ctx, AdminXHTTPEndpointRequest{
+		XHTTPKey: "ro-1-xhttp-off", ServerKey: "ro-1", Enabled: &off, InboundTag: "vless-xhttp-in",
+		Address: "ro.example", Path: "/p2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := svc.loadXHTTPEndpoints(ctx)
+	if len(got) != 1 {
+		t.Fatalf("включённых эндпоинтов %d, ожидался 1: %+v", len(got), got)
+	}
+	e := got[0]
+	if e.XHTTPKey != "ro-1-xhttp" || e.ServerKey != "ro-1" || e.InboundTag != "vless-xhttp-in" ||
+		e.Port != 443 || e.Path != "/p1" || e.Mode != "auto" || e.Fingerprint != "chrome" || e.ALPN != "h2,http/1.1" {
+		t.Fatalf("прочитано %+v", e)
+	}
+
+	for name, sql := range map[string]string{
+		"без инбаунда": `INSERT INTO vpn_xhttp_endpoints (xhttp_key, server_key, inbound_tag, address, path) VALUES ('k1', 'ro-1', ' ', 'ro.example', '/p')`,
+		"путь не от /": `INSERT INTO vpn_xhttp_endpoints (xhttp_key, server_key, inbound_tag, address, path) VALUES ('k2', 'ro-1', 'vless-xhttp-in', 'ro.example', 'p')`,
+		"порт 0":       `INSERT INTO vpn_xhttp_endpoints (xhttp_key, server_key, inbound_tag, address, path, port) VALUES ('k3', 'ro-1', 'vless-xhttp-in', 'ro.example', '/p', 0)`,
+	} {
+		if _, err := pool.Exec(ctx, sql); err == nil {
+			t.Errorf("%s: строка принята, ожидалась ошибка ограничения", name)
+		}
+	}
+
+	if err := repo.DeleteXHTTPEndpoint(ctx, "ro-1-xhttp"); err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.loadXHTTPEndpoints(ctx); len(got) != 0 {
+		t.Fatalf("после удаления: %+v", got)
+	}
+}
+
+// Инбаунд основного профиля берётся из настроек: пул-айтем → сервер →
+// Reality-эндпоинт сервера → XHTTP-эндпоинт. Если нигде не задан — пул-айтем
+// не выдаётся (встроенного тега по умолчанию нет).
+func TestPoolItemInboundComesFromSettings(t *testing.T) {
+	ctx := context.Background()
+	pool := startOrchestratorDB(t)
+	repo := NewRepository(pool)
+
+	for _, sk := range []string{"a-1", "b-1", "c-1", "d-1", "e-1"} {
+		if err := repo.UpsertAdminNode(ctx, AdminNodeRequest{
+			ServerKey: sk, NodeID: "node-" + sk, CountryCode: "XX", Title: sk, PublicHost: sk + ".example", Enabled: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.UpsertAdminPoolItem(ctx, AdminPoolItemRequest{
+			ItemKey: "item-" + sk, ServerKey: sk, CountryCode: "XX", Title: sk, Enabled: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustExec := func(sql string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	mustExec(`UPDATE vpn_pool_items SET inbound_tag = 'from-item' WHERE server_key = 'a-1'`)
+	mustExec(`UPDATE vpn_servers SET default_inbound_tag = 'from-server' WHERE server_key IN ('a-1', 'b-1')`)
+	if err := repo.UpsertAdminRealityEndpoint(ctx, AdminRealityEndpointRequest{
+		RealityKey: "c-reality", ServerKey: "c-1", InboundTag: "from-reality", Address: "1.2.3.4",
+		ServerName: "c-1.example", PublicKey: "pbk",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpsertAdminXHTTPEndpoint(ctx, AdminXHTTPEndpointRequest{
+		XHTTPKey: "d-xhttp", ServerKey: "d-1", InboundTag: "from-xhttp", Address: "d-1.example", Path: "/p",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := repo.ListEnabledPoolItems(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, it := range items {
+		got[it.ServerKey] = it.InboundTag
+	}
+	want := map[string]string{"a-1": "from-item", "b-1": "from-server", "c-1": "from-reality", "d-1": "from-xhttp"}
+	if len(got) != len(want) {
+		t.Fatalf("пул-айтемы: %v, ожидалось %v (e-1 без инбаунда не выдаётся)", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s: инбаунд %q, ожидался %q", k, got[k], v)
+		}
 	}
 }

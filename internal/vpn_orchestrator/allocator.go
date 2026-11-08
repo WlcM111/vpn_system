@@ -48,6 +48,7 @@ type stickyResolver func(itemKey string) string
 //
 //  1. Группируем включённые пул-айтемы по стране.
 //  2. В каждой стране делим ноды на живые-со-ёмкостью и живые-переполненные (overflow).
+//     Нода считается живой, если свежий heartbeat ИЛИ успешная TCP-проба (blocked_controlplane).
 //  3. Sticky: если пользователь уже на живой ноде этой страны со ёмкостью — оставляем её.
 //  4. Иначе берём ноду с наименьшим LoadScore среди со-ёмкостью.
 //  5. Если со-ёмкостью нод нет:
@@ -96,7 +97,7 @@ func (a *Allocator) Allocate(items []PoolItem, servers map[string][]ServerLoad, 
 			if !ok {
 				continue // нет метрик ноды — пропускаем
 			}
-			if !s.AliveByHeartbeat(now, a.heartbeatTTL) {
+			if !s.Alive(now, a.heartbeatTTL) {
 				continue // мёртвая нода — исключаем всегда
 			}
 			if s.HasCapacity() {
@@ -147,4 +148,45 @@ func (a *Allocator) Allocate(items []PoolItem, servers map[string][]ServerLoad, 
 	}
 
 	return a.SortPoolItems(chosen)
+}
+
+// AllocateWithMassDropProtection — Allocate плюс PreserveCountriesOnMassDrop
+// для стран, где не осталось ни одной живой ноды (ни heartbeat, ни TCP-пробы):
+// такая страна сохраняется в подписке одним резервным пул-айтемом.
+//
+// Страну, где живые ноды есть, но все переполнены, Allocate исключает только
+// при softOverflow=false (BALANCER_SOFT_OVERFLOW=false) — это решение
+// оператора, и резервный пул-айтем его не отменяет.
+func (a *Allocator) AllocateWithMassDropProtection(items []PoolItem, servers map[string][]ServerLoad, sticky stickyResolver, now time.Time) []PoolItem {
+	selected := a.Allocate(items, servers, sticky, now)
+	live := a.countriesWithLiveNodes(items, servers, now)
+	candidates := make([]PoolItem, 0, len(items))
+	for _, it := range items {
+		if !live[it.CountryCode] {
+			candidates = append(candidates, it)
+		}
+	}
+	return PreserveCountriesOnMassDrop(candidates, selected, sticky)
+}
+
+// countriesWithLiveNodes — страны, где у включённых пул-айтемов есть хотя бы
+// одна живая нода (свежий heartbeat или успешная TCP-проба), независимо от
+// того, остались ли на ней свободные места.
+func (a *Allocator) countriesWithLiveNodes(items []PoolItem, servers map[string][]ServerLoad, now time.Time) map[string]bool {
+	byKey := make(map[string]ServerLoad)
+	for _, list := range servers {
+		for _, s := range list {
+			byKey[s.ServerKey] = s
+		}
+	}
+	live := make(map[string]bool)
+	for _, it := range items {
+		if !it.Enabled {
+			continue
+		}
+		if s, ok := byKey[it.ServerKey]; ok && s.Alive(now, a.heartbeatTTL) {
+			live[it.CountryCode] = true
+		}
+	}
+	return live
 }

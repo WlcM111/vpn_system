@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"os"
+	"strings"
 	"time"
 
 	commonkafka "vpn-platform/internal/common/kafka"
@@ -78,6 +80,30 @@ func paymentMethodPrompt(p planOption) string {
 	return fmt.Sprintf("Тариф: %s — %s ₽.\n\nВыберите способ оплаты 👇", p.Title, p.Price())
 }
 
+// isPlategaConfigured проверяет, задан ли PLATEGA_MERCHANT_ID в формате
+// валидного UUID и не выключен ли способ явно через PLATEGA_ENABLED=false.
+// Если переменная не вставлена или пуста, при выборе первого способа бот
+// сразу сообщает о временной недоступности и рекомендует «Способ 2», а после
+// задания переменной и пересоздания контейнера бота сообщение исчезает.
+//
+// API-ключ (PLATEGA_SECRET) боту не передаётся: счета создаёт billing, и если
+// ключ не задан или ключи неверны, billing сам отвечает пользователю, что
+// «Способ 1» недоступен, и предлагает «Способ 2».
+func isPlategaConfigured() bool {
+	if enabled := strings.ToLower(strings.TrimSpace(os.Getenv("PLATEGA_ENABLED"))); enabled == "false" || enabled == "0" || enabled == "no" {
+		return false
+	}
+	merchant := strings.TrimSpace(os.Getenv("PLATEGA_MERCHANT_ID"))
+	if merchant == "" {
+		return false
+	}
+	parsed, err := uuid.Parse(merchant)
+	if err != nil || parsed == uuid.Nil {
+		return false
+	}
+	return true
+}
+
 // handlePlanSelected — пользователь выбрал тариф: запоминаем его и предлагаем
 // два способа оплаты. Счёт ещё не создаётся.
 func (a *App) handlePlanSelected(ctx context.Context, chatID int64, state *ChatState, p planOption) {
@@ -139,6 +165,12 @@ func (a *App) handlePaymentMethodChoice(ctx context.Context, chatID int64, state
 		a.resetToTariffs(ctx, chatID, state, "Выбор тарифа устарел — выберите тариф заново 👇")
 		return
 	}
+	if provider == kafkacontracts.BillingPaymentProviderPlatega && !isPlategaConfigured() {
+		slog.Info("tg-bot platega method unavailable: env vars not configured", "chat_id", chatID, "plan", p.Code)
+		a.sendText(chatID, "Способ оплаты «Способ 1 - рекомендуемый» сейчас недоступен.\nРекомендуем выбрать «Способ 2» 👇", paymentMethodKeyboard())
+		return
+	}
+
 	label := btnPayMethodPlatega
 	if provider == kafkacontracts.BillingPaymentProviderYooKassa {
 		label = btnPayMethodYooKassa

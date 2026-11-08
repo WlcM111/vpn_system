@@ -97,7 +97,7 @@ func (r *Repository) UpsertAdminRealityEndpoint(ctx context.Context, req AdminRe
 			reality_key, server_key, enabled, sort_order, inbound_tag,
 			address, port, server_name, public_key, short_id, spider_x, flow, fingerprint, remarks
 		) VALUES (
-			$1, $2, $3, $4, COALESCE(NULLIF($5, ''), 'vless-reality-in'),
+			$1, $2, $3, $4, $5,
 			$6, $7, $8, $9, $10,
 			COALESCE(NULLIF($11, ''), '/'),
 			COALESCE(NULLIF($12, ''), 'xtls-rprx-vision'),

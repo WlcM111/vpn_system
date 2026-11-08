@@ -120,6 +120,8 @@ func newTestApp(t *testing.T) (*App, *fakeTelegram, *fakePublisher) {
 	t.Setenv("PLAN_QUARTERLY_PRICE_RUB", "249")
 	t.Setenv("PLAN_SEMIANNUAL_PRICE_RUB", "439")
 	t.Setenv("PLAN_ANNUAL_PRICE_RUB", "799")
+	t.Setenv("PLATEGA_MERCHANT_ID", "1a021d91-9b26-4762-b303-5d4aac74e921")
+	t.Setenv("PLATEGA_ENABLED", "")
 	ft := newFakeTelegram(t)
 	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("123:TEST", ft.srv.URL+"/bot%s/%s")
 	if err != nil {
@@ -232,6 +234,61 @@ func TestMethodChoicePublishesCommandWithProvider(t *testing.T) {
 				t.Fatalf("reply %q", ft.last(t).Params["text"])
 			}
 		})
+	}
+}
+
+// Когда переменные окружения Platega не заданы (или пусты), при выборе
+// «Способ 1 - рекомендуемый» бот сразу сообщает о недоступности и рекомендует
+// «Способ 2», не отправляя команду в Kafka. Когда переменные заданы — сообщение
+// исчезает и создаётся счёт.
+func TestPlategaUnavailableWhenEnvVarsMissing(t *testing.T) {
+	app, ft, pub := newTestApp(t)
+	t.Setenv("PLATEGA_MERCHANT_ID", "")
+
+	send(app, btnBuySubscription)
+	send(app, labelMonthly())
+	send(app, btnPayMethodPlatega)
+
+	if pub.count() != 0 {
+		t.Fatalf("expected 0 published commands when Platega env vars are missing, got %d", pub.count())
+	}
+	reply := ft.last(t).Params["text"]
+	if !strings.Contains(reply, "сейчас недоступен") || !strings.Contains(reply, "Способ 2") {
+		t.Fatalf("unexpected reply when Platega env missing: %q", reply)
+	}
+
+	// После установки переменных окружения сообщение о недоступности исчезает
+	t.Setenv("PLATEGA_MERCHANT_ID", "1a021d91-9b26-4762-b303-5d4aac74e921")
+	send(app, btnPayMethodPlatega)
+
+	if pub.count() != 1 {
+		t.Fatalf("expected 1 published command after setting Platega env vars, got %d", pub.count())
+	}
+	if !strings.Contains(ft.last(t).Params["text"], "Готовлю ссылку на оплату") {
+		t.Fatalf("unexpected reply after setting Platega env vars: %q", ft.last(t).Params["text"])
+	}
+}
+
+// PLATEGA_ENABLED=false выключает «Способ 1» в боте даже при заданном ID
+// мерчанта; API-ключ боту для проверки не нужен.
+func TestPlategaDisabledBySwitch(t *testing.T) {
+	app, ft, pub := newTestApp(t)
+	t.Setenv("PLATEGA_ENABLED", "false")
+
+	send(app, btnBuySubscription)
+	send(app, labelMonthly())
+	send(app, btnPayMethodPlatega)
+	if pub.count() != 0 {
+		t.Fatalf("expected 0 published commands with PLATEGA_ENABLED=false, got %d", pub.count())
+	}
+	if reply := ft.last(t).Params["text"]; !strings.Contains(reply, "сейчас недоступен") {
+		t.Fatalf("unexpected reply with PLATEGA_ENABLED=false: %q", reply)
+	}
+
+	t.Setenv("PLATEGA_ENABLED", "")
+	send(app, btnPayMethodPlatega)
+	if pub.count() != 1 {
+		t.Fatalf("expected 1 published command after re-enabling, got %d", pub.count())
 	}
 }
 

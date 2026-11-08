@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"strconv"
+	"sync"
 	"time"
 
 	commonkafka "vpn-platform/internal/common/kafka"
@@ -15,33 +16,28 @@ import (
 
 // MetricsCollector периодически читает агрегаты из БД (и лаг из Kafka) и
 // выставляет их как Prometheus gauge. Запускается фоном из main оркестратора.
-//
-// S4: метрики разделены на «лёгкие» (ноды, heartbeat, outbox depth, lock waits,
-// connections — собираются часто, дёшевы) и «тяжёлые» (COUNT(*) по подпискам,
-// крипто-инвойсам — собираются реже, т.к. на больших таблицах это дорого).
 type MetricsCollector struct {
 	pool          *pgxpool.Pool
 	interval      time.Duration // лёгкие метрики
 	heavyInterval time.Duration // тяжёлые агрегаты (COUNT(*))
 	heartbeatTTL  time.Duration
 
-	// S12: для сбора Kafka consumer lag. Если brokers пуст — лаг не собирается.
 	kafkaBrokers []string
 	lagTargets   []lagTarget
 }
 
-// lagTarget — пара (группа, топик), по которой считаем лаг.
+// Параметры TCP-проверки VPN-портов нод в collectNodes: таймаут одной
+// попытки и число нод, проверяемых одновременно.
+const (
+	nodeProbeTimeout     = 1500 * time.Millisecond
+	nodeProbeParallelism = 16
+)
+
 type lagTarget struct {
 	group string
 	topic string
 }
 
-// NewMetricsCollector создаёт сборщик.
-//
-//	interval      — период лёгких метрик (рекомендуется 15s).
-//	heavyInterval — период тяжёлых агрегатов (рекомендуется 60s).
-//	heartbeatTTL  — порог свежести heartbeat ноды (та же величина, что у балансировщика).
-//	kafkaBrokers  — брокеры для сбора consumer lag (nil/пусто — лаг не собирается).
 func NewMetricsCollector(pool *pgxpool.Pool, interval, heavyInterval, heartbeatTTL time.Duration, kafkaBrokers []string) *MetricsCollector {
 	if interval <= 0 {
 		interval = 15 * time.Second
@@ -58,7 +54,6 @@ func NewMetricsCollector(pool *pgxpool.Pool, interval, heavyInterval, heartbeatT
 		heavyInterval: heavyInterval,
 		heartbeatTTL:  heartbeatTTL,
 		kafkaBrokers:  kafkaBrokers,
-		// Все consumer-группы и топики, которые они читают (см. main каждого сервиса).
 		lagTargets: []lagTarget{
 			{"vpn-orchestrator-service", commonkafka.TopicSubscriptionEvents},
 			{"vpn-orchestrator-service", commonkafka.TopicVPNEvents},
@@ -71,9 +66,7 @@ func NewMetricsCollector(pool *pgxpool.Pool, interval, heavyInterval, heartbeatT
 	}
 }
 
-// Run запускает циклы сбора до отмены контекста. Блокирующий — вызывать в горутине.
 func (c *MetricsCollector) Run(ctx context.Context) {
-	// первый сбор сразу, чтобы метрики появились без задержки
 	c.collectLight(ctx)
 	c.collectHeavy(ctx)
 
@@ -94,7 +87,6 @@ func (c *MetricsCollector) Run(ctx context.Context) {
 	}
 }
 
-// collectLight — дешёвые метрики, собираются часто.
 func (c *MetricsCollector) collectLight(ctx context.Context) {
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -116,7 +108,6 @@ func (c *MetricsCollector) collectLight(ctx context.Context) {
 	commonmetrics.MetricsCollectorLastRun.Set(float64(time.Now().Unix()))
 }
 
-// collectHeavy — дорогие агрегаты (COUNT(*)), собираются реже (S4).
 func (c *MetricsCollector) collectHeavy(ctx context.Context) {
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -141,14 +132,6 @@ func (c *MetricsCollector) collectHeavy(ctx context.Context) {
 	}
 }
 
-// collectSegments раскладывает всех пользователей по взаимоисключающим
-// сегментам. Классификация идёт по двум независимым осям: что человек
-// использует сейчас (статус и срок) и платил ли он когда-либо.
-//
-// Порядок веток в CASE важен: сначала отсекаем истёкшие сроки, потом уже
-// разбираем живые подписки. Ветка ELSE не нужна — перечислены все статусы
-// схемы (none, trial, active, grace, expired), поэтому сумма сегментов
-// всегда равна общему числу строк.
 func (c *MetricsCollector) collectSegments(ctx context.Context) error {
 	rows, err := c.pool.Query(ctx, `
 		SELECT segment, count(*)
@@ -180,8 +163,6 @@ func (c *MetricsCollector) collectSegments(ctx context.Context) error {
 	}
 	defer rows.Close()
 
-	// Обнуляем все сегменты заранее: если категория опустела, метрика должна
-	// показать 0, а не залипшее прошлое значение.
 	found := map[string]float64{
 		"never_started":    0,
 		"trial_new":        0,
@@ -209,9 +190,6 @@ func (c *MetricsCollector) collectSegments(ctx context.Context) error {
 	return nil
 }
 
-// collectRenewedThisMonth — сколько уникальных людей оплатили подписку в
-// текущем календарном месяце. Считаем и карточные платежи, и крипто-инвойсы;
-// один человек, оплативший обоими способами, учитывается один раз.
 func (c *MetricsCollector) collectRenewedThisMonth(ctx context.Context) error {
 	var renewed float64
 	err := c.pool.QueryRow(ctx, `
@@ -234,7 +212,6 @@ func (c *MetricsCollector) collectRenewedThisMonth(ctx context.Context) error {
 	return nil
 }
 
-// collectSubscriptions — пользователи по статусу подписки (тяжёлый COUNT).
 func (c *MetricsCollector) collectSubscriptions(ctx context.Context) error {
 	rows, err := c.pool.Query(ctx, `
 		SELECT status, COUNT(*) FROM user_subscriptions GROUP BY status
@@ -244,7 +221,6 @@ func (c *MetricsCollector) collectSubscriptions(ctx context.Context) error {
 	}
 	defer rows.Close()
 
-	// сбрасываем известные статусы в 0, чтобы исчезнувшие группы не "залипали"
 	known := []string{"none", "trial", "active", "grace", "expired"}
 	for _, s := range known {
 		commonmetrics.SubscriptionsByStatus.WithLabelValues(s).Set(0)
@@ -261,15 +237,6 @@ func (c *MetricsCollector) collectSubscriptions(ctx context.Context) error {
 	return rows.Err()
 }
 
-// collectSubscriptionLifecycle считает подписки по ФАКТИЧЕСКОМУ сроку действия,
-// а не по сырому status. Это устраняет завышение «Триалов»/«Активных» из-за
-// ленивого истечения: протухшие строки остаются в своём status до обращения,
-// а тут мы разделяем их по expires_at vs now().
-//
-//	kind=trial: status='trial'                    → active/expired по expires_at
-//	kind=paid:  status IN ('active','grace')      → active/expired по expires_at
-//
-// total выставляется как active+expired (без отдельного запроса).
 func (c *MetricsCollector) collectSubscriptionLifecycle(ctx context.Context) error {
 	var (
 		trialActive, trialExpired float64
@@ -277,11 +244,6 @@ func (c *MetricsCollector) collectSubscriptionLifecycle(ctx context.Context) err
 		trialChurned, paidChurned float64
 	)
 
-	// churned — те, кого уже перевели в статус expired (sweep-воркер или
-	// биллинг). Раньше этот статус не считался нигде, поэтому после отзыва
-	// доступа люди просто исчезали из метрик и отток был не виден.
-	// Платного от триального отличаем по факту успешной оплаты: код тарифа
-	// после истечения может быть перезаписан, а платёж — нет.
 	err := c.pool.QueryRow(ctx, `
 		SELECT
 			COUNT(*) FILTER (
@@ -322,23 +284,64 @@ func (c *MetricsCollector) collectSubscriptionLifecycle(ctx context.Context) err
 	commonmetrics.SubscriptionsByLifecycle.WithLabelValues("paid", "expired").Set(paidExpired)
 	commonmetrics.SubscriptionsByLifecycle.WithLabelValues("paid", "total").Set(paidActive + paidExpired)
 
-	// churned — доступ уже отозван. Именно это и есть реальный отток.
 	commonmetrics.SubscriptionsByLifecycle.WithLabelValues("trial", "churned").Set(trialChurned)
 	commonmetrics.SubscriptionsByLifecycle.WithLabelValues("paid", "churned").Set(paidChurned)
 
 	return nil
 }
 
-// collectNodes — нагрузка, вместимость, живость нод + агрегаты пула.
-// S2: active_users считается агрегацией из vpn_user_node_credentials (LEFT JOIN),
-// т.к. столбец vpn_servers.active_users больше не поддерживается.
+// collectNodes — нагрузка, вместимость, живость нод (с различением «заблокировано»
+// и «упало») + агрегаты пула.
+//
+// Порядок: сначала строки читаются из БД целиком (соединение пула не держится
+// на время сетевых проверок), затем TCP-пробы всех включённых нод идут
+// параллельно, и только после этого gauge сбрасываются и выставляются заново.
+// Последовательные пробы внутри открытого курсора укладывались бы в общий
+// 10-секундный дедлайн сбора лишь при паре нод: на заблокированных нодах
+// каждая попытка ждёт таймаут, дедлайн истекал, оставшиеся ноды получали
+// ложное «недоступен», а следующие метрики (пул, outbox, Postgres, лаг Kafka)
+// не собирались.
 func (c *MetricsCollector) collectNodes(ctx context.Context) error {
+	realityTargets := make(map[string][]string)
+	if rRows, rErr := c.pool.Query(ctx, `
+		SELECT COALESCE(server_key, ''), address, port
+		FROM vpn_reality_endpoints
+		WHERE enabled = true AND server_key IS NOT NULL AND server_key <> ''
+	`); rErr == nil {
+		for rRows.Next() {
+			var sk, addr string
+			var port int
+			if scanErr := rRows.Scan(&sk, &addr, &port); scanErr == nil {
+				if hp := formatHostPort(addr, port, 8443); hp != "" {
+					realityTargets[sk] = append(realityTargets[sk], hp)
+				}
+			}
+		}
+		rRows.Close()
+	} else {
+		slog.Warn("[metrics] load reality endpoints for node probes failed", "err", rErr)
+	}
+
+	type nodeRow struct {
+		serverKey, country, title  string
+		enabled                    bool
+		maxUsers, activeUsers      int
+		lastHB                     *time.Time
+		onlineUsers, bandwidthMbps int
+		uplinkBps, downlinkBps     int64
+		publicHost                 string
+		port                       int
+
+		probeChecked, probeAlive bool
+	}
+
 	rows, err := c.pool.Query(ctx, `
 		SELECT s.server_key, s.country_code, s.title, s.enabled,
 			s.max_users,
 			COALESCE(a.active_users, 0) AS active_users,
 			s.last_heartbeat_at,
-			s.online_users, s.uplink_bps, s.downlink_bps, s.bandwidth_mbps
+			s.online_users, s.uplink_bps, s.downlink_bps, s.bandwidth_mbps,
+			s.public_host, s.port
 		FROM vpn_servers s
 		LEFT JOIN (
 			SELECT server_key, COUNT(*) AS active_users
@@ -350,14 +353,52 @@ func (c *MetricsCollector) collectNodes(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	var nodes []nodeRow
+	for rows.Next() {
+		var n nodeRow
+		if err := rows.Scan(&n.serverKey, &n.country, &n.title, &n.enabled, &n.maxUsers, &n.activeUsers, &n.lastHB,
+			&n.onlineUsers, &n.uplinkBps, &n.downlinkBps, &n.bandwidthMbps, &n.publicHost, &n.port); err != nil {
+			rows.Close()
+			return err
+		}
+		nodes = append(nodes, n)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
 
-	// перед перезаписью сбрасываем per-node gauge, чтобы удалённые ноды не залипали.
-	// (Prometheus client не умеет "забывать" лейблы сам — Reset чистит весь вектор.)
+	// TCP-проверка VPN-портов (Reality / основной публичный адрес) всех
+	// включённых нод — параллельно, не больше nodeProbeParallelism за раз.
+	probeAt := time.Now().UTC()
+	sem := make(chan struct{}, nodeProbeParallelism)
+	var wg sync.WaitGroup
+	for i := range nodes {
+		n := &nodes[i]
+		if !n.enabled {
+			continue
+		}
+		targets := append([]string(nil), realityTargets[n.serverKey]...)
+		if hp := formatHostPort(n.publicHost, n.port, 443); hp != "" {
+			targets = append(targets, hp)
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			n.probeChecked, n.probeAlive = ProbeTCPTargets(ctx, targets, nodeProbeTimeout)
+		}()
+	}
+	wg.Wait()
+
 	commonmetrics.NodeActiveUsers.Reset()
 	commonmetrics.NodeMaxUsers.Reset()
 	commonmetrics.NodeLoadPercent.Reset()
 	commonmetrics.NodeUp.Reset()
+	commonmetrics.NodeBlocked.Reset()
+	commonmetrics.NodeProbeUp.Reset()
+	commonmetrics.NodeHealthState.Reset()
 	commonmetrics.NodeHeartbeatAgeSeconds.Reset()
 	commonmetrics.NodeTrafficBps.Reset()
 	commonmetrics.NodeOnlineUsers.Reset()
@@ -366,107 +407,110 @@ func (c *MetricsCollector) collectNodes(ctx context.Context) error {
 	commonmetrics.NodeBandwidthMbps.Reset()
 
 	var (
-		totalEnabled, totalDisabled, totalAlive, totalStale int
-		capacityTotal, activeTotal                          float64
+		totalEnabled, totalDisabled, totalAlive, totalStale, totalBlocked, totalDown int
+		capacityTotal, activeTotal                                                   float64
 	)
 	now := time.Now()
 
-	for rows.Next() {
-		var (
-			serverKey, country, title  string
-			enabled                    bool
-			maxUsers, activeUsers      int
-			lastHB                     *time.Time
-			onlineUsers, bandwidthMbps int
-			uplinkBps, downlinkBps     int64
-		)
-		if err := rows.Scan(&serverKey, &country, &title, &enabled, &maxUsers, &activeUsers, &lastHB,
-			&onlineUsers, &uplinkBps, &downlinkBps, &bandwidthMbps); err != nil {
-			return err
-		}
-
-		// Выключенная нода выведена из работы намеренно: в подписку и в
-		// балансировку она не попадает (ListEnabledPoolItems,
-		// LoadServersByCountry). Её построчные метрики не выставляем, чтобы
-		// отключённая нода (или страна целиком) не оставалась в панелях
-		// дашборда и не держала алерты NodeDown/NodeBandwidthNotConfigured.
-		// В агрегатах она учитывается только как disabled; alive/stale
-		// считаются среди включённых нод.
-		if !enabled {
+	for _, n := range nodes {
+		if !n.enabled {
 			totalDisabled++
 			continue
 		}
 
-		lbl := []string{serverKey, country, title}
+		lbl := []string{n.serverKey, n.country, n.title}
 
-		commonmetrics.NodeOnlineUsers.WithLabelValues(lbl...).Set(float64(onlineUsers))
-		commonmetrics.NodeTrafficBps.WithLabelValues(serverKey, country, title, "uplink").Set(float64(uplinkBps))
-		commonmetrics.NodeTrafficBps.WithLabelValues(serverKey, country, title, "downlink").Set(float64(downlinkBps))
+		commonmetrics.NodeOnlineUsers.WithLabelValues(lbl...).Set(float64(n.onlineUsers))
+		commonmetrics.NodeTrafficBps.WithLabelValues(n.serverKey, n.country, n.title, "uplink").Set(float64(n.uplinkBps))
+		commonmetrics.NodeTrafficBps.WithLabelValues(n.serverKey, n.country, n.title, "downlink").Set(float64(n.downlinkBps))
 
 		bwPct := 0.0
 		configured := 0.0
-		if bandwidthMbps > 0 {
-			bwPct = float64(uplinkBps+downlinkBps) / (float64(bandwidthMbps) * 1_000_000) * 100.0
+		if n.bandwidthMbps > 0 {
+			bwPct = float64(n.uplinkBps+n.downlinkBps) / (float64(n.bandwidthMbps) * 1_000_000) * 100.0
 			configured = 1.0
 		}
 		commonmetrics.NodeBandwidthPercent.WithLabelValues(lbl...).Set(bwPct)
-		// Признак настройки отдаём отдельно: без него ноль в проценте
-		// означает и «канал свободен», и «полоса не задана».
 		commonmetrics.NodeBandwidthConfigured.WithLabelValues(lbl...).Set(configured)
-		commonmetrics.NodeBandwidthMbps.WithLabelValues(lbl...).Set(float64(bandwidthMbps))
+		commonmetrics.NodeBandwidthMbps.WithLabelValues(lbl...).Set(float64(n.bandwidthMbps))
 
-		commonmetrics.NodeActiveUsers.WithLabelValues(lbl...).Set(float64(activeUsers))
-		commonmetrics.NodeMaxUsers.WithLabelValues(lbl...).Set(float64(maxUsers))
+		commonmetrics.NodeActiveUsers.WithLabelValues(lbl...).Set(float64(n.activeUsers))
+		commonmetrics.NodeMaxUsers.WithLabelValues(lbl...).Set(float64(n.maxUsers))
 
 		loadPct := 0.0
-		if maxUsers > 0 {
-			loadPct = float64(activeUsers) / float64(maxUsers) * 100.0
+		if n.maxUsers > 0 {
+			loadPct = float64(n.activeUsers) / float64(n.maxUsers) * 100.0
 		}
 		commonmetrics.NodeLoadPercent.WithLabelValues(lbl...).Set(loadPct)
 
-		// живость по heartbeat
-		alive := false
-		if lastHB != nil {
-			age := now.Sub(*lastHB)
+		// 1. Проверка свежести Kafka-heartbeat
+		hbAlive := false
+		if n.lastHB != nil {
+			age := now.Sub(*n.lastHB)
 			commonmetrics.NodeHeartbeatAgeSeconds.WithLabelValues(lbl...).Set(age.Seconds())
 			if age <= c.heartbeatTTL {
-				alive = true
+				hbAlive = true
 			}
 		} else {
-			// нет heartbeat вообще — считаем возраст очень большим
 			commonmetrics.NodeHeartbeatAgeSeconds.WithLabelValues(lbl...).Set(-1)
 		}
-		if alive {
+
+		// 2. Результат TCP-проверки VPN-портов ноды (см. выше)
+		if n.probeChecked {
+			RecordNodeProbe(n.serverKey, n.probeAlive, probeAt)
+		}
+
+		state, isUp, isBlocked := ClassifyNodeHealth(hbAlive, n.probeChecked, n.probeAlive)
+
+		if isUp {
 			commonmetrics.NodeUp.WithLabelValues(lbl...).Set(1)
 		} else {
 			commonmetrics.NodeUp.WithLabelValues(lbl...).Set(0)
 		}
+		if isBlocked {
+			commonmetrics.NodeBlocked.WithLabelValues(lbl...).Set(1)
+		} else {
+			commonmetrics.NodeBlocked.WithLabelValues(lbl...).Set(0)
+		}
+		if n.probeAlive {
+			commonmetrics.NodeProbeUp.WithLabelValues(lbl...).Set(1)
+		} else {
+			commonmetrics.NodeProbeUp.WithLabelValues(lbl...).Set(0)
+		}
+		for _, st := range allNodeHealthStates {
+			val := 0.0
+			if st == state {
+				val = 1.0
+			}
+			commonmetrics.NodeHealthState.WithLabelValues(n.serverKey, n.country, n.title, string(st)).Set(val)
+		}
 
-		// агрегаты (сюда доходят только включённые ноды)
 		totalEnabled++
-		capacityTotal += float64(maxUsers)
-		activeTotal += float64(activeUsers)
-		if alive {
+		capacityTotal += float64(n.maxUsers)
+		activeTotal += float64(n.activeUsers)
+		if isUp {
 			totalAlive++
 		} else {
 			totalStale++
+			totalDown++
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
+		if isBlocked {
+			totalBlocked++
+		}
 	}
 
 	commonmetrics.NodesCount.WithLabelValues("enabled").Set(float64(totalEnabled))
 	commonmetrics.NodesCount.WithLabelValues("disabled").Set(float64(totalDisabled))
 	commonmetrics.NodesCount.WithLabelValues("alive").Set(float64(totalAlive))
 	commonmetrics.NodesCount.WithLabelValues("stale").Set(float64(totalStale))
+	commonmetrics.NodesCount.WithLabelValues("blocked").Set(float64(totalBlocked))
+	commonmetrics.NodesCount.WithLabelValues("down").Set(float64(totalDown))
 	commonmetrics.PoolCapacityTotal.Set(capacityTotal)
 	commonmetrics.PoolActiveTotal.Set(activeTotal)
 
 	return nil
 }
 
-// collectPoolItems — профили в пуле по доступности.
 func (c *MetricsCollector) collectPoolItems(ctx context.Context) error {
 	var enabledCnt, disabledCnt float64
 	err := c.pool.QueryRow(ctx, `
@@ -483,7 +527,6 @@ func (c *MetricsCollector) collectPoolItems(ctx context.Context) error {
 	return nil
 }
 
-// collectCryptoInvoices — крипто-инвойсы по статусу (тяжёлый COUNT).
 func (c *MetricsCollector) collectCryptoInvoices(ctx context.Context) error {
 	rows, err := c.pool.Query(ctx, `
 		SELECT status, COUNT(*) FROM crypto_invoices GROUP BY status
@@ -505,7 +548,6 @@ func (c *MetricsCollector) collectCryptoInvoices(ctx context.Context) error {
 	return rows.Err()
 }
 
-// collectCryptoRevenue — суммы оплаченных крипто-инвойсов по активу + общее число.
 func (c *MetricsCollector) collectCryptoRevenue(ctx context.Context) error {
 	rows, err := c.pool.Query(ctx, `
 		SELECT asset, COALESCE(SUM(amount_value::numeric), 0), COUNT(*)
@@ -533,7 +575,6 @@ func (c *MetricsCollector) collectCryptoRevenue(ctx context.Context) error {
 	return rows.Err()
 }
 
-// collectOutboxDepth — S12: глубина очереди outbox по статусам.
 func (c *MetricsCollector) collectOutboxDepth(ctx context.Context) error {
 	rows, err := c.pool.Query(ctx, `
 		SELECT status, COUNT(*) FROM event_outbox GROUP BY status
@@ -543,7 +584,6 @@ func (c *MetricsCollector) collectOutboxDepth(ctx context.Context) error {
 	}
 	defer rows.Close()
 
-	// сбрасываем известные статусы, чтобы исчезнувшие не залипали
 	known := []string{"pending", "processing", "retry", "published", "failed"}
 	for _, s := range known {
 		commonmetrics.OutboxDepth.WithLabelValues(s).Set(0)
@@ -565,7 +605,6 @@ func (c *MetricsCollector) collectOutboxDepth(ctx context.Context) error {
 	return rows.Err()
 }
 
-// collectPostgresHealth — S12: ожидания блокировок и занятость пула соединений.
 func (c *MetricsCollector) collectPostgresHealth(ctx context.Context) error {
 	var lockWaits float64
 	if err := c.pool.QueryRow(ctx, `
@@ -580,13 +619,14 @@ func (c *MetricsCollector) collectPostgresHealth(ctx context.Context) error {
 	return nil
 }
 
-// collectKafkaLag — S12: лаг consumer-групп по топикам. Если брокеры не заданы —
-// тихо пропускаем (Kafka отключена или сбор лага не нужен).
 func (c *MetricsCollector) collectKafkaLag(ctx context.Context) {
 	if len(c.kafkaBrokers) == 0 {
 		return
 	}
-	client := &kafkago.Client{Addr: kafkago.TCP(c.kafkaBrokers...)}
+	client := &kafkago.Client{
+		Addr:      kafkago.TCP(c.kafkaBrokers...),
+		Transport: commonkafka.TransportFromEnv(),
+	}
 
 	for _, t := range c.lagTargets {
 		lag, err := fetchConsumerLag(ctx, client, t.group, t.topic)
@@ -602,16 +642,13 @@ func (c *MetricsCollector) collectKafkaLag(ctx context.Context) {
 	}
 }
 
-// fetchConsumerLag возвращает лаг по каждой партиции топика для группы:
-// lag = (последний offset партиции) − (закоммиченный группой offset).
 func fetchConsumerLag(ctx context.Context, client *kafkago.Client, group, topic string) (map[int]int64, error) {
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	// 1) закоммиченные группой offset'ы по партициям
 	offsetsResp, err := client.OffsetFetch(cctx, &kafkago.OffsetFetchRequest{
 		GroupID: group,
-		Topics:  map[string][]int{topic: nil}, // nil → все партиции топика
+		Topics:  map[string][]int{topic: nil},
 	})
 	if err != nil {
 		return nil, err
@@ -624,7 +661,6 @@ func fetchConsumerLag(ctx context.Context, client *kafkago.Client, group, topic 
 		return nil, nil
 	}
 
-	// 2) последние (log end) offset'ы тех же партиций
 	reqOffsets := make(map[string][]kafkago.OffsetRequest)
 	for partition := range committed {
 		reqOffsets[topic] = append(reqOffsets[topic], kafkago.OffsetRequest{
@@ -646,7 +682,6 @@ func fetchConsumerLag(ctx context.Context, client *kafkago.Client, group, topic 
 		if !ok {
 			continue
 		}
-		// если группа ещё ничего не коммитила (comm<0), лаг считаем от 0
 		if comm < 0 {
 			comm = 0
 		}

@@ -22,19 +22,19 @@ func baseProfile() kafkacontracts.VPNNodeUserProfile {
 		CountryCode: "LT",
 		Title:       "Литва",
 		ProfileType: "vless",
-		InboundTag:  "vless-ws-in",
+		InboundTag:  "vless-main-in",
 		Email:       "tg-777-lt@vpn-platform.local",
 		VLESSUUID:   "uuid-1",
 	}
 }
 
-func testEndpoints() ([]CDNEndpoint, []GRPCEndpoint) {
+func testEndpoints() ([]CDNEndpoint, []XHTTPEndpoint) {
 	return []CDNEndpoint{{
 			CDNKey: "lt-cdn", ServerKey: "lt-main-1", Enabled: true,
 			InboundTag: "vless-xhttp-cdn-in", Address: "race-src.com",
-		}}, []GRPCEndpoint{{
-			GRPCKey: "lt-grpc", ServerKey: "lt-main-1", Enabled: true,
-			InboundTag: "vless-grpc-cdn-in", Address: "race-src.com",
+		}}, []XHTTPEndpoint{{
+			XHTTPKey: "lt-xhttp", ServerKey: "lt-main-1", Enabled: true,
+			InboundTag: "vless-xhttp-in", Address: "lt.race-src.com", Path: "/x",
 		}}
 }
 
@@ -48,20 +48,20 @@ func tags(profiles []kafkacontracts.VPNNodeUserProfile) []string {
 }
 
 // skipCDN исключает из желаемого состояния ТОЛЬКО CDN-профиль. Обычный и
-// gRPC остаются — иначе исчерпание квоты отобрало бы оплаченный доступ.
+// XHTTP остаются — иначе исчерпание квоты отобрало бы оплаченный доступ.
 func TestSkipCDNRemovesOnlyCDNProfile(t *testing.T) {
 	svc := &Service{}
-	cdn, grpc := testEndpoints()
+	cdn, xhttp := testEndpoints()
 
-	full := svc.buildUserProfiles(baseProfile(), "lt-main-1", cdn, grpc, nil, false)
-	if got, want := tags(full), []string{"vless-grpc-cdn-in", "vless-ws-in", "vless-xhttp-cdn-in"}; len(got) != 3 ||
+	full := svc.buildUserProfiles(baseProfile(), "lt-main-1", cdn, xhttp, nil, false)
+	if got, want := tags(full), []string{"vless-main-in", "vless-xhttp-cdn-in", "vless-xhttp-in"}; len(got) != 3 ||
 		got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
 		t.Fatalf("полный набор профилей: %v, ожидалось %v", got, want)
 	}
 
-	skipped := svc.buildUserProfiles(baseProfile(), "lt-main-1", cdn, grpc, nil, true)
+	skipped := svc.buildUserProfiles(baseProfile(), "lt-main-1", cdn, xhttp, nil, true)
 	got := tags(skipped)
-	want := []string{"vless-grpc-cdn-in", "vless-ws-in"}
+	want := []string{"vless-main-in", "vless-xhttp-in"}
 	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("набор при исчерпанной квоте: %v, ожидалось %v", got, want)
 	}
@@ -76,10 +76,10 @@ func TestSkipCDNRemovesOnlyCDNProfile(t *testing.T) {
 // email, тот же inbound. Иначе «отзыв CDN» незаметно пересоздал бы доступ.
 func TestSkipCDNLeavesBaseProfileIntact(t *testing.T) {
 	svc := &Service{}
-	cdn, grpc := testEndpoints()
+	cdn, xhttp := testEndpoints()
 	base := baseProfile()
 
-	skipped := svc.buildUserProfiles(base, "lt-main-1", cdn, grpc, nil, true)
+	skipped := svc.buildUserProfiles(base, "lt-main-1", cdn, xhttp, nil, true)
 	var found bool
 	for _, p := range skipped {
 		if p.InboundTag != base.InboundTag {
@@ -105,9 +105,9 @@ func TestSkipCDNLeavesBaseProfileIntact(t *testing.T) {
 // осталась бы активная CDN-учётка отозванного пользователя.
 func TestRevokePathAlwaysIncludesCDN(t *testing.T) {
 	svc := &Service{}
-	cdn, grpc := testEndpoints()
+	cdn, xhttp := testEndpoints()
 
-	profiles := svc.buildUserProfiles(baseProfile(), "lt-main-1", cdn, grpc, nil, false)
+	profiles := svc.buildUserProfiles(baseProfile(), "lt-main-1", cdn, xhttp, nil, false)
 	var hasCDN bool
 	for _, p := range profiles {
 		if p.InboundTag == "vless-xhttp-cdn-in" {
@@ -172,6 +172,9 @@ func TestGRPCInboundIsNotClassifiedAsCDN(t *testing.T) {
 	}
 	if _, ok := allow["vless-ws-in"]; ok {
 		t.Fatal("обычный инбаунд попал в CDN-allowlist")
+	}
+	if _, ok := allow["vless-xhttp-in"]; ok {
+		t.Fatal("прямой XHTTP-инбаунд попал в CDN-allowlist: его трафик ушёл бы в CDN-квоту")
 	}
 	if _, ok := allow["vless-xhttp-cdn-in"]; !ok {
 		t.Fatal("настоящий CDN-инбаунд отсутствует в allowlist")

@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -45,13 +45,8 @@ type PoolItem struct {
 	Enabled     bool
 	SortOrder   int
 
-	PublicHost string
-	Port       int
-	Transport  string
-	Security   string
-	HostHeader string
-	SNI        string
-	WSPath     string
+	// InboundTag и Flow — основной профиль пользователя на ноде (см.
+	// ListEnabledPoolItems и buildUserProfiles).
 	InboundTag string
 	Flow       string
 	Level      uint32
@@ -72,7 +67,6 @@ type UserCredential struct {
 type FeedItem struct {
 	PoolItem   PoolItem
 	Credential UserCredential
-	URL        string
 }
 
 // ServerLoad — данные о ноде для балансировщика.
@@ -101,6 +95,12 @@ type ServerLoad struct {
 
 	Weight          int
 	LastHeartbeatAt *time.Time
+
+	// ProbeChecked/ProbeAlive — результат TCP-проверки VPN-портов ноды из центра.
+	// Позволяет отличить блокировку канала Kafka («заблокировано») от реального
+	// падения сервера («упало»).
+	ProbeChecked bool
+	ProbeAlive   bool
 }
 
 // AliveByHeartbeat — нода включена и шлёт свежий heartbeat (без учёта ёмкости).
@@ -116,39 +116,36 @@ func (s ServerLoad) AliveByHeartbeat(now time.Time, heartbeatTTL time.Duration) 
 	return now.Sub(*s.LastHeartbeatAt) <= heartbeatTTL
 }
 
+// Alive — нода жива, если свежий heartbeat ИЛИ успешная TCP-проверка VPN-порта
+// (сценарий blocked_controlplane, когда ТСПУ блокирует Kafka, но сама нода жива).
+func (s ServerLoad) Alive(now time.Time, heartbeatTTL time.Duration) bool {
+	if !s.Enabled {
+		return false
+	}
+	if s.AliveByHeartbeat(now, heartbeatTTL) {
+		return true
+	}
+	return s.ProbeChecked && s.ProbeAlive
+}
+
 // HasCapacity — есть ли свободные места по мягкому лимиту max_users.
 func (s ServerLoad) HasCapacity() bool {
 	return s.MaxUsers <= 0 || s.ActiveUsers < s.MaxUsers
 }
 
-// LoadScore — «стоимость» ноды для least-load выбора. Чем меньше, тем предпочтительнее.
-// Загрузка нормируется на вес: (active_users + 1) / weight.
 // LoadScore — оценка загруженности ноды: чем меньше, тем свободнее.
-//
-// Учитывает два независимых давления и берёт большее из них: нода может быть
-// свободна по числу подключений и при этом упираться в канал, и наоборот.
-//
-// Пока нода не сообщила реальные подключения, расчёт опирается на выданные
-// учётные записи и совпадает с прежним поведением — старые ноды и ноды,
-// только что заведённые, не проваливаются в конец очереди.
 func (s ServerLoad) LoadScore() float64 {
 	w := s.Weight
 	if w <= 0 {
 		w = 1
 	}
 
-	// Давление по пользователям. +1 сохраняет различимость пустых нод:
-	// при нулевом счёте все они дали бы одинаковый ноль, и выбор между
-	// ними стал бы произвольным.
 	conns := s.OnlineUsers
 	if conns <= 0 {
 		conns = s.ActiveUsers
 	}
 	score := float64(conns+1) / float64(w)
 
-	// Давление по каналу, приведённое к той же шкале через max_users:
-	// полностью занятый канал весит столько же, сколько полностью
-	// заполненная нода.
 	if s.BandwidthMbps > 0 && s.MaxUsers > 0 {
 		capacityBps := float64(s.BandwidthMbps) * 1_000_000
 		usedBps := float64(s.UplinkBps + s.DownlinkBps)
@@ -188,6 +185,13 @@ func (r *Repository) GetAccessByToken(ctx context.Context, token string) (*Acces
 	return state, nil
 }
 
+// ListEnabledPoolItems возвращает включённые пул-айтемы включённых серверов.
+//
+// Инбаунд основного профиля берётся из настроек: пул-айтема, затем сервера
+// (default_inbound_tag), а если оба пусты — у эндпоинтов самого сервера
+// (Reality, затем XHTTP). Встроенного тега по умолчанию нет: пул-айтем, для
+// которого инбаунд не нашёлся ни в одном из этих мест, не выдаётся — учётку
+// без инбаунда нода отвергла бы целиком.
 func (r *Repository) ListEnabledPoolItems(ctx context.Context) ([]PoolItem, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT
@@ -200,14 +204,17 @@ func (r *Repository) ListEnabledPoolItems(ctx context.Context) ([]PoolItem, erro
 			pi.profile_type,
 			pi.enabled,
 			pi.sort_order,
-			vs.public_host,
-			vs.port,
-			vs.transport,
-			vs.security,
-			COALESCE(NULLIF(pi.host_header, ''), NULLIF(vs.host_header, ''), vs.public_host),
-			COALESCE(NULLIF(pi.sni, ''), NULLIF(vs.sni, ''), vs.public_host),
-			COALESCE(NULLIF(pi.ws_path, ''), NULLIF(vs.ws_path, ''), '/ws'),
-			COALESCE(NULLIF(pi.inbound_tag, ''), NULLIF(vs.default_inbound_tag, ''), 'vless-ws-tls'),
+			COALESCE(
+				NULLIF(btrim(pi.inbound_tag), ''),
+				NULLIF(btrim(vs.default_inbound_tag), ''),
+				(SELECT NULLIF(btrim(re.inbound_tag), '') FROM vpn_reality_endpoints re
+				 WHERE re.server_key = vs.server_key AND re.enabled
+				 ORDER BY re.sort_order, re.id LIMIT 1),
+				(SELECT NULLIF(btrim(xe.inbound_tag), '') FROM vpn_xhttp_endpoints xe
+				 WHERE xe.server_key = vs.server_key AND xe.enabled
+				 ORDER BY xe.sort_order, xe.id LIMIT 1),
+				''
+			),
 			COALESCE(NULLIF(pi.flow, ''), vs.flow, ''),
 			pi.level
 		FROM vpn_pool_items pi
@@ -237,18 +244,16 @@ func (r *Repository) ListEnabledPoolItems(ctx context.Context) ([]PoolItem, erro
 			&item.ProfileType,
 			&item.Enabled,
 			&item.SortOrder,
-			&item.PublicHost,
-			&item.Port,
-			&item.Transport,
-			&item.Security,
-			&item.HostHeader,
-			&item.SNI,
-			&item.WSPath,
 			&item.InboundTag,
 			&item.Flow,
 			&level,
 		); err != nil {
 			return nil, fmt.Errorf("scan pool item: %w", err)
+		}
+		if item.InboundTag == "" {
+			slog.Warn("pool item skipped: no inbound tag in pool item, server or its endpoints",
+				"item_key", item.ItemKey, "server_key", item.ServerKey)
+			continue
 		}
 		if level < 0 {
 			level = 0
@@ -263,8 +268,6 @@ func (r *Repository) ListEnabledPoolItems(ctx context.Context) ([]PoolItem, erro
 }
 
 // LoadServersByCountry возвращает карту country_code -> ноды этой страны с метриками.
-// S2: active_users считается агрегацией из vpn_user_node_credentials (LEFT JOIN),
-// а не из горячего столбца vpn_servers.active_users (он больше не поддерживается).
 func (r *Repository) LoadServersByCountry(ctx context.Context) (map[string][]ServerLoad, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT s.server_key, s.country_code, s.enabled, s.max_users,
@@ -285,6 +288,7 @@ func (r *Repository) LoadServersByCountry(ctx context.Context) (map[string][]Ser
 	}
 	defer rows.Close()
 
+	now := time.Now().UTC()
 	out := make(map[string][]ServerLoad)
 	for rows.Next() {
 		var s ServerLoad
@@ -293,6 +297,7 @@ func (r *Repository) LoadServersByCountry(ctx context.Context) (map[string][]Ser
 			&s.OnlineUsers, &s.UplinkBps, &s.DownlinkBps, &s.BandwidthMbps); err != nil {
 			return nil, fmt.Errorf("scan server load: %w", err)
 		}
+		s.ProbeChecked, s.ProbeAlive = GetNodeProbe(s.ServerKey, now, 3*time.Minute)
 		out[s.CountryCode] = append(out[s.CountryCode], s)
 	}
 	if err := rows.Err(); err != nil {
@@ -409,7 +414,6 @@ func (r *Repository) EnsureCredentialsForItemsTx(ctx context.Context, tx pgx.Tx,
 		out = append(out, FeedItem{
 			PoolItem:   item,
 			Credential: *cred,
-			URL:        BuildVLESSURL(item, *cred),
 		})
 	}
 
@@ -555,7 +559,6 @@ func (r *Repository) UpdateNodeHeartbeat(ctx context.Context, nodeID string, ser
 	return nil
 }
 
-// UpdateNodeHeartbeatTx — версия для транзакции (C1).
 // NodeLoadReport — показатели нагрузки, приходящие в heartbeat.
 type NodeLoadReport struct {
 	OnlineUsers int
@@ -633,8 +636,7 @@ func scanAccessState(row pgx.Row) (*AccessState, error) {
 }
 
 // ListActiveAccessesForReconcile возвращает все доступы со статусом trial/active/grace
-// постранично (keyset по telegram_id). Используется reconcile-воркером для
-// периодической пересинхронизации нод. afterTelegramID=0 — с начала.
+// постранично (keyset по telegram_id).
 func (r *Repository) ListActiveAccessesForReconcile(ctx context.Context, afterTelegramID int64, limit int) ([]AccessState, error) {
 	if limit <= 0 {
 		limit = 200
@@ -670,14 +672,7 @@ func (r *Repository) ListActiveAccessesForReconcile(ctx context.Context, afterTe
 }
 
 // WithAdvisoryLock выполняет fn, удерживая сессионный advisory-lock Postgres
-// на ОДНОМ выделенном соединении пула. ran=false — лок держит другая реплика
-// (проход пропускается, как и раньше).
-//
-// Дефект D7: раньше лок брался через pool.QueryRow, а снимался через
-// pool.Exec — на произвольных соединениях пула. Сессионный лок принадлежит
-// соединению, поэтому unlock на другом соединении ничего не снимал, лок
-// оставался висеть на соединении в пуле, и следующие проходы reconcile и
-// квоты CDN случайным образом «видели занятый лок» и пропускались.
+// на ОДНОМ выделенном соединении пула.
 func (r *Repository) WithAdvisoryLock(ctx context.Context, key int64, fn func(context.Context)) (bool, error) {
 	conn, err := r.pool.Acquire(ctx)
 	if err != nil {
@@ -697,8 +692,6 @@ func (r *Repository) WithAdvisoryLock(ctx context.Context, key int64, fn func(co
 		defer cancel()
 		var released bool
 		if err := conn.QueryRow(unlockCtx, `SELECT pg_advisory_unlock($1)`, key).Scan(&released); err != nil || !released {
-			// Снять лок не удалось — закрываем соединение: сессионный лок
-			// освобождается вместе с сессией, в пул соединение не вернётся.
 			_ = conn.Conn().Close(unlockCtx)
 		}
 		conn.Release()
@@ -714,15 +707,6 @@ type UserTrafficRow struct {
 }
 
 // UpsertUserNodeTrafficTx сохраняет кумулятивный трафик пользователя НА ОДНОМ УЗЛЕ.
-//
-// Ключ (telegram_id, node_id) обязателен: у пользователя своя учётка на каждой
-// ноде, и при хранении по одному telegram_id значения нод затирали друг друга —
-// показывался максимум одной ноды вместо суммы.
-//
-// GREATEST оставлен намеренно: node-agent присылает монотонно неубывающий
-// счётчик (он сам переносит показания в базу при рестарте Xray, см.
-// Agent.accumulateTraffic), поэтому GREATEST делает запись идемпотентной и
-// устойчивой к переупорядочиванию/повтору сообщений Kafka.
 func (r *Repository) UpsertUserNodeTrafficTx(ctx context.Context, tx pgx.Tx, telegramID int64, nodeID string, uplink, downlink int64) error {
 	_, err := tx.Exec(ctx, `
 		INSERT INTO vpn_user_traffic_node (telegram_id, node_id, uplink, downlink, updated_at)
@@ -739,7 +723,6 @@ func (r *Repository) UpsertUserNodeTrafficTx(ctx context.Context, tx pgx.Tx, tel
 }
 
 // GetUserTraffic возвращает суммарный трафик пользователя по всем узлам.
-// Если записей нет — нули (не ошибка).
 func (r *Repository) GetUserTraffic(ctx context.Context, telegramID int64) (UserTrafficRow, error) {
 	var row UserTrafficRow
 	err := r.pool.QueryRow(ctx, `
@@ -756,7 +739,6 @@ func (r *Repository) GetUserTraffic(ctx context.Context, telegramID int64) (User
 	return row, nil
 }
 
-// scanCredentialWithMeta — как scanCredential, плюс читает was_inserted и prev_server_key.
 func scanCredentialWithMeta(row pgx.Row, wasInserted *bool, prevServerKey *string) (*UserCredential, error) {
 	var cred UserCredential
 	if err := row.Scan(
@@ -795,10 +777,7 @@ func scanCredential(row pgx.Row) (*UserCredential, error) {
 	return &cred, nil
 }
 
-// ListEnabledCredentialsForNodeTx отдаёт включённые учётки пользователя на
-// одном узле. Нужен для частичных операций над доступом (например, снятие
-// только CDN-учётки при исчерпании квоты), где полный список кредов по всем
-// узлам был бы избыточным и опасным.
+// ListEnabledCredentialsForNodeTx отдаёт включённые учётки пользователя на одном узле.
 func (r *Repository) ListEnabledCredentialsForNodeTx(ctx context.Context, tx pgx.Tx, telegramID int64, nodeID string) ([]UserCredential, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT telegram_id, item_key, server_key, node_id, inbound_tag,
@@ -860,41 +839,8 @@ func (r *Repository) MarkCredentialsSyncedTx(ctx context.Context, tx pgx.Tx, tel
 	return nil
 }
 
-func BuildVLESSURL(item PoolItem, cred UserCredential) string {
-	host := item.PublicHost
-	port := item.Port
-	if port <= 0 {
-		port = 443
-	}
-
-	params := make([]string, 0, 8)
-	params = append(params, "encryption=none")
-	if item.Security != "" {
-		params = append(params, "security="+url.QueryEscape(item.Security))
-	}
-	if item.Transport != "" {
-		params = append(params, "type="+url.QueryEscape(item.Transport))
-	}
-	if item.HostHeader != "" {
-		params = append(params, "host="+url.QueryEscape(item.HostHeader))
-	}
-	if item.WSPath != "" {
-		params = append(params, "path="+url.QueryEscape(item.WSPath))
-	}
-	if item.SNI != "" {
-		params = append(params, "sni="+url.QueryEscape(item.SNI))
-	}
-	if item.Flow != "" {
-		params = append(params, "flow="+url.QueryEscape(item.Flow))
-	}
-
-	remark := escapeFragment(item.Title)
-	return fmt.Sprintf("vless://%s@%s:%d?%s#%s", cred.VLESSUUID, host, port, strings.Join(params, "&"), remark)
-}
-
 // DefaultNodeMaxUsers — лимит пользователей на ноду, когда при регистрации
-// (POST /admin/nodes) max_users не передан или не больше нуля. Совпадает со
-// значением по умолчанию столбца vpn_servers.max_users (миграция 0021).
+// (POST /admin/nodes) max_users не передан или не больше нуля.
 const DefaultNodeMaxUsers = 400
 
 type AdminNodeRequest struct {
@@ -913,11 +859,8 @@ type AdminNodeRequest struct {
 	Flow              string `json:"flow"`
 	MaxUsers          int    `json:"max_users"`
 	Weight            int    `json:"weight"`
-	// BandwidthMbps — полоса канала ноды, Мбит/с. Учитывается при расчёте
-	// нагрузки: нода, упирающаяся в канал, перестаёт получать новых
-	// пользователей, даже если по их числу она свободна. 0 = не задана.
-	BandwidthMbps int  `json:"bandwidth_mbps"`
-	Enabled       bool `json:"enabled"`
+	BandwidthMbps     int    `json:"bandwidth_mbps"`
+	Enabled           bool   `json:"enabled"`
 }
 
 type AdminPoolItemRequest struct {
@@ -973,7 +916,7 @@ func (r *Repository) UpsertAdminNode(ctx context.Context, req AdminNodeRequest) 
 			weight=EXCLUDED.weight,
 			bandwidth_mbps=EXCLUDED.bandwidth_mbps,
 			updated_at=now()
-    `, req.ServerKey, req.NodeID, req.CountryCode, req.Title, req.PublicHost, req.Port, req.Transport, req.Security, req.DefaultInboundTag, req.HostHeader, req.SNI, req.WSPath, req.Flow, req.Enabled, req.MaxUsers, req.Weight, req.BandwidthMbps)
+	`, req.ServerKey, req.NodeID, req.CountryCode, req.Title, req.PublicHost, req.Port, req.Transport, req.Security, req.DefaultInboundTag, req.HostHeader, req.SNI, req.WSPath, req.Flow, req.Enabled, req.MaxUsers, req.Weight, req.BandwidthMbps)
 	return err
 }
 

@@ -30,7 +30,7 @@ type TrafficAggregate struct {
 	CDNPerUser map[int64][2]int64
 
 	// Unclassified — сколько позиций пришло без inbound_tag. Это ожидаемо
-	// ненулевая величина: основной и gRPC-профили делят один email, поэтому
+	// ненулевая величина: Reality- и XHTTP-профили делят один email, поэтому
 	// агент осознанно не проставляет им тег. Алертить надо на резкий рост
 	// относительно базовой линии, а не на любое ненулевое значение.
 	Unclassified int
@@ -47,7 +47,7 @@ type TrafficAggregate struct {
 //
 //	пустой inbound_tag — учётка принадлежит нескольким инбаундам, разделить
 //	  трафик нечем; в CDN не идёт, считается в Unclassified;
-//	тег вне allowlist — обычный VLESS, gRPC, Hysteria; в CDN не идёт;
+//	тег вне allowlist — Reality, XHTTP, Hysteria; в CDN не идёт;
 //	тег в allowlist — CDN, uplink и downlink начисляются раздельно.
 //
 // Отображаемое имя, содержимое ссылки, позиция в списке и подстрока "cdn"

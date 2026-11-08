@@ -6,7 +6,6 @@ deploy/alertmanager/alertmanager.yml
 .env.*.local
 
 # IDE / OS
-.git
 .idea
 .vscode
 .DS_Store

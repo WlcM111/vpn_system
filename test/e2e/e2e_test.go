@@ -96,6 +96,14 @@ func TestE2EPaymentGrantsAccess(t *testing.T) {
 	if !strings.Contains(body, "vless://") {
 		t.Fatalf("фид не содержит конфигурации:\n%s", body)
 	}
+	for _, want := range []string{"security=reality", "type=xhttp"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("в фиде нет %s:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "type=ws") || strings.Contains(body, "type=grpc") {
+		t.Fatalf("в фиде WS или gRPC:\n%s", body)
+	}
 	t.Log("фид отдал конфигурацию — сквозной путь работает")
 }
 
@@ -132,28 +140,51 @@ func registerNode(t *testing.T) {
 	body := map[string]any{
 		"server_key":          "e2e-node-1",
 		"node_id":             "e2e-node-1",
-		"country_code":        "LT",
+		"country_code":        "RO",
 		"title":               "E2E Node",
 		"public_host":         "e2e.example.com",
 		"port":                443,
-		"transport":           "ws",
+		"transport":           "tcp",
 		"security":            "tls",
-		"default_inbound_tag": "vless-ws-in",
-		"ws_path":             "/ws",
+		"default_inbound_tag": "vless-reality-in",
 		"max_users":           1000,
 		"weight":              100,
 		"enabled":             true,
 	}
 	adminPost(t, "/admin/nodes", body)
+
+	// Ссылки подписки строятся только из эндпоинтов сервера: Reality и XHTTP.
+	adminPost(t, "/admin/reality-endpoints", map[string]any{
+		"reality_key": "e2e-node-1-reality",
+		"server_key":  "e2e-node-1",
+		"inbound_tag": "vless-reality-in",
+		"address":     "203.0.113.10",
+		"port":        8443,
+		"server_name": "e2e.example.com",
+		"public_key":  "jRA-Xa2PpClAao72QVjB6uMfkMH7eqEC-IUYZxbPIGQ",
+		"short_id":    "822caab7427c9122",
+		"flow":        "xtls-rprx-vision",
+		"remarks":     "E2E Reality",
+	})
+	adminPost(t, "/admin/xhttp-endpoints", map[string]any{
+		"xhttp_key":   "e2e-node-1-xhttp",
+		"server_key":  "e2e-node-1",
+		"inbound_tag": "vless-xhttp-in",
+		"address":     "e2e.example.com",
+		"server_name": "e2e.example.com",
+		"path":        "/e2e-xhttp",
+		"remarks":     "E2E XHTTP",
+	})
 }
 
 func registerPoolItem(t *testing.T) {
 	t.Helper()
 	body := map[string]any{
-		"item_key":     "e2e-node-1-ws",
+		"item_key":     "e2e-node-1-main",
 		"server_key":   "e2e-node-1",
-		"country_code": "LT",
-		"title":        "E2E Lithuania",
+		"country_code": "RO",
+		"title":        "E2E Romania",
+		"inbound_tag":  "vless-reality-in",
 		"enabled":      true,
 		"sort_order":   10,
 	}

@@ -26,9 +26,7 @@ type AdminHysteriaEndpointRequest struct {
 }
 
 // ListHysteriaEndpoints возвращает все эндпоинты, включая выключенные, по
-// sort_order, id. Выключенные строки нужны загрузчику: по ним он отличает
-// «Hysteria выключена на сервере» от «таблица пуста» (см.
-// hysteriaEndpointsForIssue) — так же, как у gRPC.
+// sort_order, id. Включённые отбирает загрузчик (hysteriaEndpointsForIssue).
 func (r *Repository) ListHysteriaEndpoints(ctx context.Context) ([]HysteriaEndpoint, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

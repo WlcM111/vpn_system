@@ -58,14 +58,23 @@ func main() {
 
 	consumerWorkers := parseIntEnv("CONSUMER_WORKERS", 3)
 
-	// Политика CDN-квоты валидируется на старте: неоднозначная конфигурация
-	// должна давать понятную ошибку запуска, а не тихо работать не так.
 	cdnQuota, err := vpn_orchestrator.LoadCDNQuotaPolicyFromEnv()
 	if err != nil {
 		log.Fatalf("invalid CDN quota configuration: %v", err)
 	}
 	log.Printf("[vpn-orchestrator] cdn quota: enabled=%v enforce=%v limit=%d bytes fail_mode=%s",
 		cdnQuota.Enabled, cdnQuota.Enforce, cdnQuota.LimitBytes, cdnQuota.FailMode)
+
+	trialServer := strings.TrimSpace(os.Getenv("TRIAL_SERVER"))
+	if trialServer == "" {
+		trialServer = strings.TrimSpace(os.Getenv("TRIAL_SERVER_KEY"))
+	}
+	if trialServer == "" {
+		trialServer = strings.TrimSpace(os.Getenv("TRIAL_COUNTRY_CODE"))
+	}
+	if trialServer == "" {
+		trialServer = "RO"
+	}
 
 	repo := vpn_orchestrator.NewRepository(pool)
 	svc := vpn_orchestrator.NewService(repo, producer, vpn_orchestrator.ServiceConfig{
@@ -74,6 +83,7 @@ func main() {
 		DefaultMaxUsers:  parseIntEnv("NODE_DEFAULT_MAX_USERS", vpn_orchestrator.DefaultNodeMaxUsers),
 		DefaultWeight:    parseIntEnv("NODE_DEFAULT_WEIGHT", 100),
 		SoftOverflow:     parseBoolEnv("BALANCER_SOFT_OVERFLOW", true),
+		TrialServer:      trialServer,
 		CDNQuota:         cdnQuota,
 	})
 
@@ -102,8 +112,6 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
-	// S1: пул воркеров на партиции. Каждый воркер — свой reader в той же
-	// consumer group; Kafka распределяет партиции топика между воркерами.
 	if len(brokers) > 0 {
 		for i := 0; i < consumerWorkers; i++ {
 			go func() {
@@ -130,15 +138,12 @@ func main() {
 
 	go outbox.RunPublisher(ctx, pool, producer, "vpn-orchestrator-service")
 
-	// P1: периодическая пересинхронизация нод (самовосстановление после сбоев).
 	go svc.RunReconcileWorker(
 		ctx,
 		parseDurationEnv("RECONCILE_INTERVAL", 10*time.Minute),
 		parseIntEnv("RECONCILE_BATCH_SIZE", 200),
 	)
 
-	// Фоновый сборщик бизнес-метрик из БД для Prometheus/Grafana.
-	// Интервал и TTL heartbeat настраиваются через env (значения по умолчанию ниже).
 	metricsCollector := vpn_orchestrator.NewMetricsCollector(
 		pool,
 		parseDurationEnv("METRICS_COLLECT_INTERVAL", 15*time.Second),
@@ -148,17 +153,12 @@ func main() {
 	)
 	go metricsCollector.Run(ctx)
 
-	// Квота CDN: плановый календарный сброс периода и экспорт метрик.
-	// Проход сверяет ключ периода, поэтому пропуск полуночи из-за рестарта
-	// или деплоя не теряет сброс.
 	go svc.RunCDNQuotaWorker(
 		ctx,
 		parseDurationEnv("CDN_QUOTA_WORKER_INTERVAL", 5*time.Minute),
 		parseIntEnv("CDN_QUOTA_RESET_BATCH_SIZE", 500),
 	)
 
-	// S9/S11: периодическая чистка опубликованного outbox и старого inbox.
-	// Запускаем в оркестраторе (одного достаточно — таблицы общие).
 	go outbox.RunCleanup(ctx, pool)
 
 	<-stop
