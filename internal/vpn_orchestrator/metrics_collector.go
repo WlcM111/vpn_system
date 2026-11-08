@@ -385,6 +385,18 @@ func (c *MetricsCollector) collectNodes(ctx context.Context) error {
 			return err
 		}
 
+		// Выключенная нода выведена из работы намеренно: в подписку и в
+		// балансировку она не попадает (ListEnabledPoolItems,
+		// LoadServersByCountry). Её построчные метрики не выставляем, чтобы
+		// отключённая нода (или страна целиком) не оставалась в панелях
+		// дашборда и не держала алерты NodeDown/NodeBandwidthNotConfigured.
+		// В агрегатах она учитывается только как disabled; alive/stale
+		// считаются среди включённых нод.
+		if !enabled {
+			totalDisabled++
+			continue
+		}
+
 		lbl := []string{serverKey, country, title}
 
 		commonmetrics.NodeOnlineUsers.WithLabelValues(lbl...).Set(float64(onlineUsers))
@@ -430,14 +442,10 @@ func (c *MetricsCollector) collectNodes(ctx context.Context) error {
 			commonmetrics.NodeUp.WithLabelValues(lbl...).Set(0)
 		}
 
-		// агрегаты
-		if enabled {
-			totalEnabled++
-			capacityTotal += float64(maxUsers)
-			activeTotal += float64(activeUsers)
-		} else {
-			totalDisabled++
-		}
+		// агрегаты (сюда доходят только включённые ноды)
+		totalEnabled++
+		capacityTotal += float64(maxUsers)
+		activeTotal += float64(activeUsers)
 		if alive {
 			totalAlive++
 		} else {

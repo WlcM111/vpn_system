@@ -57,6 +57,76 @@ groups:
             В event_outbox {{ $value | printf "%.0f" }} событий со статусом
             failed. Они не доехали до Kafka.
 
+      # Platega: сверка оплат просрочена — воркер не работает или API
+      # Platega недоступно. Колбэки Platega повторяет лишь несколько раз,
+      # поэтому сверка — единственная гарантия, что оплата не потеряется.
+      - alert: PlategaChecksOverdue
+        expr: vpn_platform_billing_platega_overdue_checks > 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Сверка оплат Platega просрочена"
+          description: >-
+            {{ $value | printf "%.0f" }} заказов Platega ждут сверки статуса
+            дольше 10 минут. Проверить логи billing-service (platega) и
+            SELECT order_id, status, last_error, next_check_at FROM payments
+            WHERE provider='platega' AND next_check_at < now() - interval '10 minutes';
+
+      - alert: PlategaReconcilerStalled
+        expr: >-
+          (time() - vpn_platform_billing_platega_reconcile_last_run_timestamp) > 300
+          and vpn_platform_billing_platega_reconcile_last_run_timestamp > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Воркер сверки Platega не работает"
+          description: >-
+            Последний проход воркера сверки Platega был более 5 минут назад.
+
+      # Заказы, требующие решения человека: несовпадение суммы/валюты,
+      # спор, чарджбэк, частичный возврат.
+      - alert: PlategaPaymentNeedsReview
+        expr: sum(vpn_platform_billing_platega_payments{status=~"review_required|disputed|chargebacked|partially_refunded"}) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Платежи Platega требуют ручной проверки"
+          description: >-
+            {{ $value | printf "%.0f" }} заказов Platega в статусах
+            review_required/disputed/chargebacked/partially_refunded.
+            SELECT order_id, telegram_id, status, provider_status, review_reason
+            FROM payments WHERE provider='platega'
+            AND status IN ('review_required','disputed','chargebacked','partially_refunded');
+
+      # Platega отказывает в создании счетов или не отвечает.
+      - alert: PlategaCreateFailing
+        expr: sum(increase(vpn_platform_billing_platega_requests_total{op="create",result=~"rejected|ambiguous"}[15m])) > 2
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Platega не создаёт счета"
+          description: >-
+            За 15 минут {{ $value | printf "%.0f" }} неудачных попыток
+            создать счёт. Пользователям предлагается «Способ 2». Частая
+            причина — неверные PLATEGA_MERCHANT_ID / PLATEGA_SECRET.
+
+      # Колбэки с неверными ключами: ключ в .env не совпадает с ЛК Platega
+      # или кто-то перебирает адрес колбэка.
+      - alert: PlategaCallbackUnauthorized
+        expr: sum(increase(vpn_platform_billing_platega_callbacks_total{result="unauthorized"}[30m])) > 3
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Колбэки Platega отклоняются (неверные ключи)"
+          description: >-
+            За 30 минут {{ $value | printf "%.0f" }} колбэков отклонено по
+            X-MerchantId/X-Secret. Сверить ключи в .env с ЛК Platega.
+
   - name: pipeline
     interval: 30s
     rules:
@@ -87,6 +157,21 @@ groups:
             Партиция {{ $labels.partition }} топика {{ $labels.topic }}
             держит ненулевое отставание уже полчаса. Вероятно, консьюмер
             зациклился на одном сообщении.
+
+      # События, захваченные публикатором и не отмеченные результатом.
+      # С арендой (platform/0011) они перезахватываются через 2 минуты;
+      # долго висящие — это строки, застрявшие до миграции (locked_at IS NULL).
+      - alert: OutboxStuckProcessing
+        expr: vpn_platform_outbox_depth{status="processing"} > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "События outbox зависли в processing"
+          description: >-
+            {{ $value | printf "%.0f" }} событий в статусе processing дольше
+            15 минут. SELECT id, topic, event_type, created_at FROM event_outbox
+            WHERE status='processing' ORDER BY id LIMIT 20;
 
       # Очередь публикации растёт: publisher не успевает или Kafka недоступна.
       - alert: OutboxDepthGrowing

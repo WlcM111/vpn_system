@@ -15,8 +15,9 @@ lifecycle and self-registering VPN nodes.
 
 ## What it does
 
-Users subscribe through a Telegram bot, pay by card, and get a subscription
-link that their VPN client refreshes automatically. Access is granted, renewed
+Users subscribe through a Telegram bot, pay through Platega (recommended) or
+YooKassa, and get a subscription link that their VPN client refreshes
+automatically. Access is granted, renewed
 and revoked without manual intervention. VPN nodes register themselves and are
 load-balanced by country.
 
@@ -39,6 +40,7 @@ graph TB
     K --> AGENT[vpn-node-agent]
     AGENT -->|gRPC| XRAY[Xray]
 
+    PL[Platega] -.callback.-> BIL
     YK[YooKassa] -.webhook.-> BIL
     CB[CryptoBot] -.webhook.-> CRY
 
@@ -56,7 +58,7 @@ graph TB
 |---|---|
 | `tg-bot-gateway` | Telegram UI. Holds no business logic — publishes commands, renders notifications |
 | `user-subscription` | Source of truth for subscription state: trial, active, grace, expired |
-| `billing` | Card payments via YooKassa: checkout, recurring charges, grace period, refunds |
+| `billing` | One-off payments via Platega (method 1, recommended) and YooKassa (method 2): checkout, status reconciliation, grace period, refunds. See [docs/payments-platega.md](docs/payments-platega.md) |
 | `crypto-billing` | Cryptocurrency payments via CryptoBot (USDT, TON, BTC, ETH). Implemented and deployed; the payment option is currently hidden in the bot UI |
 | `vpn-orchestrator` | Node pool, load balancing, credential issuance, subscription feed |
 | `vpn-node-agent` | Runs on each VPN node, manages Xray users over gRPC, reports traffic. Lives in a [separate repository](https://github.com/WlcM111/vpn_node_agent) |
@@ -190,6 +192,7 @@ that forced each decision, the options considered, and what it costs:
 - [One agent per VPN node, not one per protocol](docs/adr/0002-single-agent-per-node.md)
 - [Access revocation independent of the billing provider](docs/adr/0003-access-revocation-independent-of-billing.md)
 - [AWS as an infrastructure-as-code demonstration, not production hosting](docs/adr/0004-aws-not-in-production.md)
+- [Platega as a second payment provider inside billing](docs/adr/0005-platega-second-payment-provider.md)
 
 ## Infrastructure
 
@@ -207,6 +210,14 @@ production runs elsewhere.
 Prometheus scrapes every service; Grafana dashboards cover subscription
 lifecycle, node health, payment flow and consumer lag. Health endpoints
 (`/healthz`, `/readyz`) back the container health checks.
+
+## Operations
+
+- [Payments through Platega](docs/payments-platega.md): order statuses,
+  reconciliation, orders that need a human decision.
+- [Bonus campaigns](docs/bonus-campaign.md): grant free days to users whose
+  access recently ended and send them a bot message — once per user, only to
+  them (`scripts/bonus_campaign.sh`).
 
 ## License
 

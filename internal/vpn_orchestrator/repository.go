@@ -669,16 +669,42 @@ func (r *Repository) ListActiveAccessesForReconcile(ctx context.Context, afterTe
 	return out, nil
 }
 
-// TryAdvisoryLock пытается взять сессионный advisory-lock Postgres (не блокирует).
-// Результат (взят/нет) пишется в locked.
-func (r *Repository) TryAdvisoryLock(ctx context.Context, key int64, locked *bool) error {
-	return r.pool.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, key).Scan(locked)
-}
-
-// AdvisoryUnlock освобождает ранее взятый advisory-lock.
-func (r *Repository) AdvisoryUnlock(ctx context.Context, key int64) error {
-	_, err := r.pool.Exec(ctx, `SELECT pg_advisory_unlock($1)`, key)
-	return err
+// WithAdvisoryLock выполняет fn, удерживая сессионный advisory-lock Postgres
+// на ОДНОМ выделенном соединении пула. ran=false — лок держит другая реплика
+// (проход пропускается, как и раньше).
+//
+// Дефект D7: раньше лок брался через pool.QueryRow, а снимался через
+// pool.Exec — на произвольных соединениях пула. Сессионный лок принадлежит
+// соединению, поэтому unlock на другом соединении ничего не снимал, лок
+// оставался висеть на соединении в пуле, и следующие проходы reconcile и
+// квоты CDN случайным образом «видели занятый лок» и пропускались.
+func (r *Repository) WithAdvisoryLock(ctx context.Context, key int64, fn func(context.Context)) (bool, error) {
+	conn, err := r.pool.Acquire(ctx)
+	if err != nil {
+		return false, fmt.Errorf("acquire connection for advisory lock: %w", err)
+	}
+	var locked bool
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&locked); err != nil {
+		conn.Release()
+		return false, fmt.Errorf("try advisory lock: %w", err)
+	}
+	if !locked {
+		conn.Release()
+		return false, nil
+	}
+	defer func() {
+		unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		var released bool
+		if err := conn.QueryRow(unlockCtx, `SELECT pg_advisory_unlock($1)`, key).Scan(&released); err != nil || !released {
+			// Снять лок не удалось — закрываем соединение: сессионный лок
+			// освобождается вместе с сессией, в пул соединение не вернётся.
+			_ = conn.Conn().Close(unlockCtx)
+		}
+		conn.Release()
+	}()
+	fn(ctx)
+	return true, nil
 }
 
 // UserTrafficRow — суммарный трафик пользователя по всем узлам (байты).
@@ -866,6 +892,11 @@ func BuildVLESSURL(item PoolItem, cred UserCredential) string {
 	return fmt.Sprintf("vless://%s@%s:%d?%s#%s", cred.VLESSUUID, host, port, strings.Join(params, "&"), remark)
 }
 
+// DefaultNodeMaxUsers — лимит пользователей на ноду, когда при регистрации
+// (POST /admin/nodes) max_users не передан или не больше нуля. Совпадает со
+// значением по умолчанию столбца vpn_servers.max_users (миграция 0021).
+const DefaultNodeMaxUsers = 400
+
 type AdminNodeRequest struct {
 	ServerKey         string `json:"server_key"`
 	NodeID            string `json:"node_id"`
@@ -913,7 +944,7 @@ func (r *Repository) UpsertAdminNode(ctx context.Context, req AdminNodeRequest) 
 		req.Port = 443
 	}
 	if req.MaxUsers <= 0 {
-		req.MaxUsers = 200
+		req.MaxUsers = DefaultNodeMaxUsers
 	}
 	if req.Weight <= 0 {
 		req.Weight = 100

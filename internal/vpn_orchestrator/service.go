@@ -28,7 +28,7 @@ type ServiceConfig struct {
 
 	// Балансировка (все значения приходят из env через main.go).
 	NodeHeartbeatTTL time.Duration // нода жива, если heartbeat не старше этого
-	DefaultMaxUsers  int           // лимит пользователей на ноду по умолчанию
+	DefaultMaxUsers  int           // NODE_DEFAULT_MAX_USERS; регистрация ноды берёт DefaultNodeMaxUsers
 	DefaultWeight    int           // вес ноды по умолчанию
 	SoftOverflow     bool          // выдавать переполненную ноду вместо отказа
 

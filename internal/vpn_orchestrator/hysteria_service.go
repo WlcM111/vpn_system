@@ -19,19 +19,41 @@ import (
 
 // loadHysteriaEndpoints отдаёт включённые Hysteria-эндпоинты с учётом
 // рубильника HYSTERIA_CONFIG_ENABLED и env-фолбэка.
+//
+// Ошибка чтения таблицы даёт пустой список, а не фолбэк: недоступность БД не
+// должна подменять настройки таблицы переменными окружения (как у gRPC).
 func (s *Service) loadHysteriaEndpoints(ctx context.Context) []HysteriaEndpoint {
 	if !hysteriaConfigEnabled() {
 		return nil
 	}
-	endpoints, err := s.repo.ListEnabledHysteriaEndpoints(ctx)
+	rows, err := s.repo.ListHysteriaEndpoints(ctx)
 	if err != nil {
 		slog.Error("load hysteria endpoints failed", "err", err)
-		endpoints = nil
+		return nil
 	}
-	if len(endpoints) == 0 {
-		if envEndpoint, ok := hysteriaEndpointFromEnv(); ok {
-			endpoints = []HysteriaEndpoint{envEndpoint}
+	return hysteriaEndpointsForIssue(rows, hysteriaEndpointFromEnv)
+}
+
+// hysteriaEndpointsForIssue оставляет из строк таблицы только включённые.
+//
+// Env-фолбэк (HYSTERIA_ADDRESS) применяется только к ПУСТОЙ таблице, как и
+// описано в шапке файла. Строка с enabled = FALSE означает «на этом сервере
+// Hysteria выключена», и окружение не должно отменять это решение. Раньше
+// фолбэк срабатывал, когда не находилось ни одной включённой строки (и при
+// ошибке чтения), поэтому выключение всех строк возвращало в подписку
+// эндпоинт из окружения (дефект D11; для gRPC то же исправлено ранее).
+func hysteriaEndpointsForIssue(rows []HysteriaEndpoint, fromEnv func() (HysteriaEndpoint, bool)) []HysteriaEndpoint {
+	if len(rows) == 0 {
+		if e, ok := fromEnv(); ok {
+			return []HysteriaEndpoint{e}
+		}
+		return nil
+	}
+	out := make([]HysteriaEndpoint, 0, len(rows))
+	for _, e := range rows {
+		if e.Enabled {
+			out = append(out, e)
 		}
 	}
-	return endpoints
+	return out
 }

@@ -25,8 +25,11 @@ type AdminHysteriaEndpointRequest struct {
 	Remarks      string `json:"remarks,omitempty"`
 }
 
-// ListEnabledHysteriaEndpoints возвращает включённые эндпоинты по sort_order, id.
-func (r *Repository) ListEnabledHysteriaEndpoints(ctx context.Context) ([]HysteriaEndpoint, error) {
+// ListHysteriaEndpoints возвращает все эндпоинты, включая выключенные, по
+// sort_order, id. Выключенные строки нужны загрузчику: по ним он отличает
+// «Hysteria выключена на сервере» от «таблица пуста» (см.
+// hysteriaEndpointsForIssue) — так же, как у gRPC.
+func (r *Repository) ListHysteriaEndpoints(ctx context.Context) ([]HysteriaEndpoint, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -35,7 +38,6 @@ func (r *Repository) ListEnabledHysteriaEndpoints(ctx context.Context) ([]Hyster
 			hysteria_key, COALESCE(server_key, ''), enabled, sort_order,
 			address, port, sni, insecure, obfs_type, obfs_password, remarks
 		FROM vpn_hysteria_endpoints
-		WHERE enabled = TRUE
 		ORDER BY sort_order, id
 	`)
 	if err != nil {

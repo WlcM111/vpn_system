@@ -71,7 +71,7 @@ func main() {
 	svc := vpn_orchestrator.NewService(repo, producer, vpn_orchestrator.ServiceConfig{
 		FeedFormat:       strings.TrimSpace(os.Getenv("SUBSCRIPTION_FEED_FORMAT")),
 		NodeHeartbeatTTL: parseDurationEnv("NODE_HEARTBEAT_TTL", 90*time.Second),
-		DefaultMaxUsers:  parseIntEnv("NODE_DEFAULT_MAX_USERS", 200),
+		DefaultMaxUsers:  parseIntEnv("NODE_DEFAULT_MAX_USERS", vpn_orchestrator.DefaultNodeMaxUsers),
 		DefaultWeight:    parseIntEnv("NODE_DEFAULT_WEIGHT", 100),
 		SoftOverflow:     parseBoolEnv("BALANCER_SOFT_OVERFLOW", true),
 		CDNQuota:         cdnQuota,

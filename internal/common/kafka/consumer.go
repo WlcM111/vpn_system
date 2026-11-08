@@ -100,10 +100,65 @@ func RunConsumerPool(
 	return nil
 }
 
+// messageReader — то, что консьюмеру нужно от kafka-go Reader. Выделено,
+// чтобы цикл обработки можно было проверить тестом без брокера.
+type messageReader interface {
+	FetchMessage(ctx context.Context) (kafkago.Message, error)
+	CommitMessages(ctx context.Context, msgs ...kafkago.Message) error
+}
+
+// retryBackoff — пауза перед повтором того же сообщения; dltRetryWait —
+// пауза перед повтором публикации в DLT. Переменные (а не константы) — для
+// тестов.
+var (
+	retryBackoff = func(attempt int) time.Duration {
+		return time.Duration(minInt(attempt, 10)) * 500 * time.Millisecond
+	}
+	dltRetryWait = 5 * time.Second
+)
+
 func RunConsumerWithDLT(ctx context.Context, reader *kafkago.Reader, serviceName string, handle Handler, dltProducer *Producer, dltTopic string) error {
 	if reader == nil {
 		return nil
 	}
+	var dlt func(context.Context, Message, error) error
+	if dltProducer != nil && dltTopic != "" {
+		dlt = func(ctx context.Context, msg Message, cause error) error {
+			return publishDLT(ctx, dltProducer, dltTopic, msg, serviceName, cause)
+		}
+	}
+	return runConsumer(ctx, reader, serviceName, handle, dlt)
+}
+
+// publishDLTUntilDone публикует сообщение в DLT, повторяя до успеха (дефект
+// D9). Раньше при ошибке публикации цикл делал continue: FetchMessage отдавал
+// СЛЕДУЮЩЕЕ сообщение, его коммит сдвигал offset группы дальше упавшего, и
+// упавшее сообщение терялось — ни в топике, ни в DLT. Теперь партиция ждёт,
+// пока DLT станет доступен. false — контекст отменён (остановка сервиса):
+// offset не закоммичен, сообщение придёт снова после рестарта.
+func publishDLTUntilDone(ctx context.Context, dlt func(context.Context, Message, error) error, msg Message, serviceName string, cause error) bool {
+	for {
+		dltErr := dlt(ctx, msg, cause)
+		if dltErr == nil {
+			return true
+		}
+		slog.Error("failed to publish message to DLT, keeping offset uncommitted",
+			"service", serviceName,
+			"topic", msg.Topic,
+			"partition", msg.Partition,
+			"offset", msg.Offset,
+			"key", string(msg.Key),
+			"err", dltErr,
+		)
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(dltRetryWait):
+		}
+	}
+}
+
+func runConsumer(ctx context.Context, reader messageReader, serviceName string, handle Handler, dlt func(context.Context, Message, error) error) error {
 	if handle == nil {
 		return errors.New("nil kafka handler")
 	}
@@ -134,7 +189,9 @@ func RunConsumerWithDLT(ctx context.Context, reader *kafkago.Reader, serviceName
 		if err != nil {
 			if errors.Is(err, ErrSkip) {
 				commonmetrics.KafkaConsumedTotal.WithLabelValues(msg.Topic, "skip").Inc()
-				_ = publishDLT(ctx, dltProducer, dltTopic, msg, serviceName, err)
+				if dlt != nil {
+					_ = dlt(ctx, msg, err)
+				}
 				attemptStore.Reset(ctx, attemptKey)
 				if commitErr := reader.CommitMessages(ctx, msg); commitErr != nil {
 					return commitErr
@@ -155,23 +212,9 @@ func RunConsumerWithDLT(ctx context.Context, reader *kafkago.Reader, serviceName
 				"err", err,
 			)
 
-			if attemptCount >= 20 && dltProducer != nil && dltTopic != "" {
-				if dltErr := publishDLT(ctx, dltProducer, dltTopic, msg, serviceName, err); dltErr != nil {
-					slog.Error("failed to publish message to DLT, keeping offset uncommitted",
-						"service", serviceName,
-						"topic", msg.Topic,
-						"partition", msg.Partition,
-						"offset", msg.Offset,
-						"key", string(msg.Key),
-						"dlt_topic", dltTopic,
-						"err", dltErr,
-					)
-					select {
-					case <-ctx.Done():
-						return nil
-					case <-time.After(5 * time.Second):
-					}
-					continue
+			if attemptCount >= 20 && dlt != nil {
+				if !publishDLTUntilDone(ctx, dlt, msg, serviceName, err) {
+					return nil
 				}
 				commonmetrics.KafkaConsumedTotal.WithLabelValues(msg.Topic, "dlt").Inc()
 				attemptStore.Reset(ctx, attemptKey)
@@ -197,7 +240,7 @@ func RunConsumerWithDLT(ctx context.Context, reader *kafkago.Reader, serviceName
 				select {
 				case <-ctx.Done():
 					return nil
-				case <-time.After(time.Duration(minInt(attemptCount, 10)) * 500 * time.Millisecond):
+				case <-time.After(retryBackoff(attemptCount)):
 				}
 
 				err = handle(ctx, msg)
@@ -228,23 +271,9 @@ func RunConsumerWithDLT(ctx context.Context, reader *kafkago.Reader, serviceName
 				// ни в DLT. Для billing.events это означало потерю
 				// подтверждённого платежа — деньги списаны, подписка не выдана,
 				// и следа не осталось нигде.
-				if dltProducer != nil && dltTopic != "" {
-					if dltErr := publishDLT(ctx, dltProducer, dltTopic, msg, serviceName, err); dltErr != nil {
-						slog.Error("failed to publish message to DLT, keeping offset uncommitted",
-							"service", serviceName,
-							"topic", msg.Topic,
-							"partition", msg.Partition,
-							"offset", msg.Offset,
-							"key", string(msg.Key),
-							"dlt_topic", dltTopic,
-							"err", dltErr,
-						)
-						select {
-						case <-ctx.Done():
-							return nil
-						case <-time.After(5 * time.Second):
-						}
-						continue
+				if dlt != nil {
+					if !publishDLTUntilDone(ctx, dlt, msg, serviceName, err) {
+						return nil
 					}
 					commonmetrics.KafkaConsumedTotal.WithLabelValues(msg.Topic, "dlt").Inc()
 				}

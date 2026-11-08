@@ -104,3 +104,77 @@ func TestBuildHysteriaURLRemarksUseSpaces(t *testing.T) {
 		t.Errorf("фрагмент не содержит %%20 — пробелы закодированы неверно: %q", got[idx:])
 	}
 }
+
+// Дефект D11: выключенная строка таблицы выключает Hysteria на своём сервере,
+// и env-фолбэк её не возвращает — он действует только для пустой таблицы
+// (симметрично TestGRPCEndpointsForIssue).
+func TestHysteriaEndpointsForIssue(t *testing.T) {
+	withEnv := func() (HysteriaEndpoint, bool) {
+		return HysteriaEndpoint{HysteriaKey: "env", ServerKey: "lt-1", Address: "env.example", Enabled: true}, true
+	}
+	noEnv := func() (HysteriaEndpoint, bool) { return HysteriaEndpoint{}, false }
+
+	lt := HysteriaEndpoint{HysteriaKey: "lt", ServerKey: "lt-1", Address: "lt.example", Enabled: true}
+	de := HysteriaEndpoint{HysteriaKey: "de", ServerKey: "de-1", Address: "de.example", Enabled: true}
+	ltOff, deOff := lt, de
+	ltOff.Enabled = false
+	deOff.Enabled = false
+
+	tests := []struct {
+		name    string
+		rows    []HysteriaEndpoint
+		fromEnv func() (HysteriaEndpoint, bool)
+		want    []string
+	}{
+		{"все строки выключены — Hysteria нет, окружение её не возвращает", []HysteriaEndpoint{ltOff, deOff}, withEnv, nil},
+		{"выключен один сервер — второй остаётся", []HysteriaEndpoint{ltOff, de}, withEnv, []string{"de"}},
+		{"все строки включены", []HysteriaEndpoint{lt, de}, withEnv, []string{"lt", "de"}},
+		{"пустая таблица — работает env-фолбэк", nil, withEnv, []string{"env"}},
+		{"пустая таблица без окружения — Hysteria нет", nil, noEnv, nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hysteriaEndpointsForIssue(tt.rows, tt.fromEnv)
+			keys := make([]string, 0, len(got))
+			for _, e := range got {
+				keys = append(keys, e.HysteriaKey)
+			}
+			if strings.Join(keys, ",") != strings.Join(tt.want, ",") {
+				t.Fatalf("к выдаче %v, ожидалось %v", keys, tt.want)
+			}
+		})
+	}
+}
+
+// Выключенная строка убирает Hysteria-ссылку из подписки, даже когда
+// HYSTERIA_ADDRESS указывает на тот же сервер — самый опасный случай фолбэка.
+func TestDisabledHysteriaEndpointIsNotIssued(t *testing.T) {
+	svc := &Service{}
+	items := []FeedItem{{
+		PoolItem:   PoolItem{ItemKey: "lt", ServerKey: "lt-main-1"},
+		Credential: UserCredential{VLESSUUID: "uuid-1"},
+		URL:        "vless://uuid-1@lt.race-src.com:443#LT",
+	}}
+	fromEnv := func() (HysteriaEndpoint, bool) {
+		return HysteriaEndpoint{HysteriaKey: "env", ServerKey: "lt-main-1", Address: "race-src.com", Enabled: true}, true
+	}
+	row := HysteriaEndpoint{HysteriaKey: "lt-hy", ServerKey: "lt-main-1", Enabled: true, Address: "race-src.com"}
+
+	inFeed := func(rows []HysteriaEndpoint) bool {
+		lines, _ := svc.buildGroupedFeedLinesWithEndpoints(items, nil, nil, hysteriaEndpointsForIssue(rows, fromEnv), nil)
+		for _, l := range lines {
+			if strings.HasPrefix(l, "hysteria2://") {
+				return true
+			}
+		}
+		return false
+	}
+	if !inFeed([]HysteriaEndpoint{row}) {
+		t.Fatal("включённая строка: Hysteria-ссылки в подписке нет")
+	}
+	row.Enabled = false
+	if inFeed([]HysteriaEndpoint{row}) {
+		t.Fatal("выключенная строка: Hysteria-ссылка выдана из окружения")
+	}
+}

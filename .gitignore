@@ -27,7 +27,8 @@ tmp/
 # tooling temp
 *.log
 *.tmp
-*.swpproject_archive.zip
+*.swp
+project_archive.zip
 *.zip
 
 # Terraform
@@ -37,5 +38,9 @@ tmp/
 *.tfvars
 !*.tfvars.example
 .terraform.lock.hcl
-crash.log.env.bak-*
+crash.log
+# Резервные копии и временные файлы .env (scripts/setup_platega_env.sh).
+.env.bak-*
+.env.tmp.*
+.env.lock
 dump.sql

@@ -44,10 +44,52 @@ var (
 		Help: "Subscription activations actually applied to the database.",
 	}, []string{"source", "result"})
 
+	// SubscriptionBonusGrantsTotal — бонусные начисления по кампаниям оператора
+	// (subscription.grant_bonus). Отдельно от SubscriptionActivationsTotal:
+	// бонус не платёж и не должен маскировать алерт PaymentWithoutActivation.
+	// outcome — granted|already_granted|deferred_grace|deferred_billing.
+	SubscriptionBonusGrantsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "vpn_platform_subscription_bonus_grants_total",
+		Help: "Operator bonus grants by outcome.",
+	}, []string{"outcome"})
+
 	BillingPaymentsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "vpn_platform_billing_payments_total",
 		Help: "Billing payment outcomes as reported by the provider, before activation.",
 	}, []string{"outcome"})
+
+	// Platega: обращения к API. op — create|status; result — ok|rejected
+	// (4xx или запрос не ушёл)|ambiguous (исход неизвестен)|not_found|error.
+	BillingPlategaRequestsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "vpn_platform_billing_platega_requests_total",
+		Help: "Platega API calls by operation and result.",
+	}, []string{"op", "result"})
+
+	// Platega: входящие колбэки. result — accepted|unauthorized|malformed|
+	// ignored (не наш заказ)|duplicate_tx|error|disabled.
+	BillingPlategaCallbacksTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "vpn_platform_billing_platega_callbacks_total",
+		Help: "Platega callbacks by handling result.",
+	}, []string{"result"})
+
+	// Platega: заказы по локальному статусу (срез, выставляет воркер сверки).
+	BillingPlategaPaymentsByStatus = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vpn_platform_billing_platega_payments",
+		Help: "Platega orders by local status.",
+	}, []string{"status"})
+
+	// Platega: заказы, сверка которых просрочена более чем на 10 минут.
+	// Больше нуля — воркер сверки не работает или API недоступно.
+	BillingPlategaOverdueChecks = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "vpn_platform_billing_platega_overdue_checks",
+		Help: "Platega orders whose status check is overdue by more than 10 minutes.",
+	})
+
+	// Время последнего прохода воркера сверки Platega.
+	BillingPlategaReconcileLastRun = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "vpn_platform_billing_platega_reconcile_last_run_timestamp",
+		Help: "Unix timestamp of the last Platega reconcile pass.",
+	})
 
 	KafkaHandlerDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "vpn_platform_kafka_handler_duration_seconds",
@@ -136,10 +178,12 @@ var (
 		Help: "Seconds since last heartbeat of a node.",
 	}, []string{"server_key", "country", "title"})
 
-	// Кол-во нод по состоянию: enabled/disabled/alive/stale.
+	// Кол-во нод по состоянию: enabled/disabled — все ноды; alive/stale —
+	// только включённые (выключенная нода не считается ни живой, ни
+	// проблемной, и построчных метрик node_* у неё нет).
 	NodesCount = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "vpn_platform_nodes_count",
-		Help: "Number of nodes by state.",
+		Help: "Number of nodes by state: enabled and disabled count all nodes; alive and stale count enabled nodes only.",
 	}, []string{"state"})
 
 	// Суммарная вместимость и занятость пула (для общей картины).
@@ -328,6 +372,9 @@ func init() {
 		// технические
 		KafkaConsumedTotal, KafkaPublishedTotal, HTTPRequestsTotal, BillingPaymentsTotal, KafkaHandlerDuration,
 		SubscriptionActivationsTotal,
+		SubscriptionBonusGrantsTotal,
+		BillingPlategaRequestsTotal, BillingPlategaCallbacksTotal, BillingPlategaPaymentsByStatus,
+		BillingPlategaOverdueChecks, BillingPlategaReconcileLastRun,
 		// бизнес-метрики
 		SubscriptionsByStatus,
 		SubscriptionsByLifecycle,
