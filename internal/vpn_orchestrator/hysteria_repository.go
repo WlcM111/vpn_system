@@ -23,6 +23,9 @@ type AdminHysteriaEndpointRequest struct {
 	ObfsType     string `json:"obfs_type,omitempty"`
 	ObfsPassword string `json:"obfs_password,omitempty"`
 	Remarks      string `json:"remarks,omitempty"`
+	// InboundTag — тег Hysteria2-инбаунда Xray (нода-вход каскада); пусто —
+	// отдельный сервер Hysteria2.
+	InboundTag string `json:"inbound_tag,omitempty"`
 }
 
 // ListHysteriaEndpoints возвращает все эндпоинты, включая выключенные, по
@@ -34,7 +37,8 @@ func (r *Repository) ListHysteriaEndpoints(ctx context.Context) ([]HysteriaEndpo
 	rows, err := r.pool.Query(queryCtx, `
 		SELECT
 			hysteria_key, COALESCE(server_key, ''), enabled, sort_order,
-			address, port, sni, insecure, obfs_type, obfs_password, remarks
+			address, port, sni, insecure, obfs_type, obfs_password, remarks,
+			inbound_tag
 		FROM vpn_hysteria_endpoints
 		ORDER BY sort_order, id
 	`)
@@ -49,6 +53,7 @@ func (r *Repository) ListHysteriaEndpoints(ctx context.Context) ([]HysteriaEndpo
 		if err := rows.Scan(
 			&e.HysteriaKey, &e.ServerKey, &e.Enabled, &e.SortOrder,
 			&e.Address, &e.Port, &e.SNI, &e.Insecure, &e.ObfsType, &e.ObfsPassword, &e.Remarks,
+			&e.InboundTag,
 		); err != nil {
 			return nil, err
 		}
@@ -89,10 +94,12 @@ func (r *Repository) UpsertAdminHysteriaEndpoint(ctx context.Context, req AdminH
 	_, err := r.pool.Exec(queryCtx, `
 		INSERT INTO vpn_hysteria_endpoints (
 			hysteria_key, server_key, enabled, sort_order,
-			address, port, sni, insecure, obfs_type, obfs_password, remarks
+			address, port, sni, insecure, obfs_type, obfs_password, remarks,
+			inbound_tag
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			COALESCE(NULLIF($11, ''), 'Hysteria')
+			COALESCE(NULLIF($11, ''), 'Hysteria'),
+			btrim($12)
 		)
 		ON CONFLICT (hysteria_key) DO UPDATE SET
 			server_key = EXCLUDED.server_key,
@@ -105,10 +112,12 @@ func (r *Repository) UpsertAdminHysteriaEndpoint(ctx context.Context, req AdminH
 			obfs_type = EXCLUDED.obfs_type,
 			obfs_password = EXCLUDED.obfs_password,
 			remarks = EXCLUDED.remarks,
+			inbound_tag = EXCLUDED.inbound_tag,
 			updated_at = now()
 	`,
 		req.HysteriaKey, serverKey, enabled, sortOrder,
 		req.Address, port, req.SNI, insecure, req.ObfsType, req.ObfsPassword, req.Remarks,
+		req.InboundTag,
 	)
 	return err
 }

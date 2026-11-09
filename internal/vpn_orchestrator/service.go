@@ -356,6 +356,16 @@ func buildCDNProfile(base kafkacontracts.VPNNodeUserProfile, serverKey string, c
 // вернул бы отключённую учётку обратно. На путь ОТЗЫВА этот флаг не подаётся —
 // снимать надо в том числе и CDN-учётку.
 func (s *Service) buildUserProfiles(base kafkacontracts.VPNNodeUserProfile, serverKey string, cdnEndpoints []CDNEndpoint, xhttpEndpoints []XHTTPEndpoint, realityEndpoints []RealityEndpoint, skipCDN bool) []kafkacontracts.VPNNodeUserProfile {
+	return s.buildUserProfilesWithHysteria(base, serverKey, cdnEndpoints, xhttpEndpoints, realityEndpoints, nil, skipCDN)
+}
+
+// buildUserProfilesWithHysteria — buildUserProfiles плюс профиль
+// Hysteria2-инбаунда Xray, если у Hysteria2-эндпоинта сервера задан
+// inbound_tag (нода-вход каскада: Hysteria2 работает внутри Xray). Учётка та
+// же (email и UUID), UUID служит паролем Hysteria2. У эндпоинтов обычных нод
+// inbound_tag пустой: их отдельный сервер Hysteria2 проверяет UUID у агента по
+// HTTP, и профиля для него нет — набор профилей обычных нод не меняется.
+func (s *Service) buildUserProfilesWithHysteria(base kafkacontracts.VPNNodeUserProfile, serverKey string, cdnEndpoints []CDNEndpoint, xhttpEndpoints []XHTTPEndpoint, realityEndpoints []RealityEndpoint, hysteriaEndpoints []HysteriaEndpoint, skipCDN bool) []kafkacontracts.VPNNodeUserProfile {
 	index := make(map[string]int, 4)
 	out := make([]kafkacontracts.VPNNodeUserProfile, 0, 4)
 	add := func(p kafkacontracts.VPNNodeUserProfile) {
@@ -408,6 +418,19 @@ func (s *Service) buildUserProfiles(base kafkacontracts.VPNNodeUserProfile, serv
 		}
 	}
 
+	// Hysteria2 внутри Xray: та же учётка в Hysteria2-инбаунде, пароль — UUID.
+	// flow пустой, Optional=true: нода без такого инбаунда пропустит профиль.
+	if endpoint, ok := selectHysteriaForServer(hysteriaEndpoints, serverKey); ok {
+		if inbound := strings.TrimSpace(endpoint.InboundTag); inbound != "" {
+			hysteriaProfile := base
+			hysteriaProfile.InboundTag = inbound
+			hysteriaProfile.Protocol = kafkacontracts.ProfileProtocolHysteria
+			hysteriaProfile.Flow = ""
+			hysteriaProfile.Optional = true
+			add(hysteriaProfile)
+		}
+	}
+
 	if !skipCDN {
 		if cdnProfile, ok := buildCDNProfile(base, serverKey, cdnEndpoints); ok {
 			add(cdnProfile)
@@ -439,6 +462,7 @@ func (s *Service) publishSyncCommands(ctx context.Context, tx pgx.Tx, access *Ac
 	cdnEndpoints := s.loadCDNEndpoints(ctx)
 	xhttpEndpoints := s.loadXHTTPEndpoints(ctx)
 	realityEndpoints := s.loadRealityEndpoints(ctx)
+	hysteriaEndpoints := s.loadHysteriaEndpoints(ctx)
 
 	// Узлы, где CDN-квота пользователя исчерпана: их CDN-профиль в желаемое
 	// состояние не попадает, поэтому reconcile не возвращает отключённый доступ.
@@ -469,7 +493,7 @@ func (s *Service) publishSyncCommands(ctx context.Context, tx pgx.Tx, access *Ac
 				Level:       item.PoolItem.Level,
 				AccessUntil: access.AccessUntil,
 			}
-			profiles = append(profiles, s.buildUserProfiles(base, item.PoolItem.ServerKey, cdnEndpoints, xhttpEndpoints, realityEndpoints, skipCDN)...)
+			profiles = append(profiles, s.buildUserProfilesWithHysteria(base, item.PoolItem.ServerKey, cdnEndpoints, xhttpEndpoints, realityEndpoints, hysteriaEndpoints, skipCDN)...)
 		}
 
 		cmd := kafkacontracts.NodeSyncUserCommand{
@@ -522,6 +546,7 @@ func (s *Service) publishRevokeCommands(ctx context.Context, tx pgx.Tx, telegram
 	revokeCDNEndpoints := s.loadCDNEndpoints(ctx)
 	revokeXHTTPEndpoints := s.loadXHTTPEndpoints(ctx)
 	revokeRealityEndpoints := s.loadRealityEndpoints(ctx)
+	revokeHysteriaEndpoints := s.loadHysteriaEndpoints(ctx)
 
 	for nodeID, nodeCreds := range byNode {
 		profiles := make([]kafkacontracts.VPNNodeUserProfile, 0, len(nodeCreds)*2)
@@ -534,7 +559,7 @@ func (s *Service) publishRevokeCommands(ctx context.Context, tx pgx.Tx, telegram
 			}
 			// Отзыв: CDN-профиль включаем всегда (skipCDN=false) — иначе на узле
 			// осталась бы активная CDN-учётка отозванного пользователя.
-			profiles = append(profiles, s.buildUserProfiles(base, cred.ServerKey, revokeCDNEndpoints, revokeXHTTPEndpoints, revokeRealityEndpoints, false)...)
+			profiles = append(profiles, s.buildUserProfilesWithHysteria(base, cred.ServerKey, revokeCDNEndpoints, revokeXHTTPEndpoints, revokeRealityEndpoints, revokeHysteriaEndpoints, false)...)
 		}
 
 		cmd := kafkacontracts.NodeRevokeUserCommand{
