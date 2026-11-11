@@ -262,3 +262,30 @@ func TestRevokeProfilesIncludeXHTTP(t *testing.T) {
 		t.Fatalf("XHTTP-учётки нет в наборе отзыва: %+v", profiles)
 	}
 }
+
+func TestBuildXHTTPVLESSURL_PaddingAndXmuxExtra(t *testing.T) {
+	e := testXHTTPEndpoint()
+	e.XPaddingBytes = "100-1000"
+	e.ScMaxEachPostBytes = 1000000
+	e.ScMinPostsIntervalMs = "10-50"
+	e.EnableXmux = true
+	e.XmuxJSON = `{"maxConcurrency":"16-32","maxConnections":0,"cMaxReuseTimes":"64-128","hMaxRequestTimes":"600-900","hMaxReusableSecs":"1800-3000","hKeepAlivePeriod":0}`
+
+	link := BuildXHTTPVLESSURLFromEndpoint(e, testUUID)
+	got := extraFromURL(t, link)
+
+	wantParts := []string{
+		`"xPaddingBytes":"100-1000"`,
+		`"scMaxEachPostBytes":1000000`,
+		`"scMinPostsIntervalMs":"10-50"`,
+		`"maxConcurrency":"16-32"`,
+		`"cMaxReuseTimes":"64-128"`,
+		`"hMaxRequestTimes":"600-900"`,
+		`"hMaxReusableSecs":"1800-3000"`,
+	}
+	for _, w := range wantParts {
+		if !strings.Contains(got, w) {
+			t.Errorf("в extra нет %s, получено: %s", w, got)
+		}
+	}
+}

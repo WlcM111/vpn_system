@@ -10,8 +10,8 @@ import (
 // ============================================================================
 // XHTTP-эндпоинты (VLESS + XHTTP + TLS), привязанные к серверам.
 //
-// Прямой вход на ноду: TLS на 443 терминирует nginx ноды с сертификатом её
-// собственного домена, путь эндпоинта проксируется (grpc_pass, h2c) в
+// Прямой вход на ноду или relay-сервер: TLS на 443 терминирует nginx с
+// сертификатом домена узла, путь эндпоинта проксируется (grpc_pass, h2c) в
 // XHTTP-инбаунд Xray на 127.0.0.1. Это не CDN: CDN-эндпоинты (таблица
 // vpn_cdn_endpoints) живут отдельно, со своим email учётки и своей квотой.
 //
@@ -40,6 +40,15 @@ type XHTTPEndpoint struct {
 	Fingerprint string
 	ALPN        string
 	Remarks     string
+
+	// Параметры XHTTP padding и пула соединений XMUX
+	// (миграция 0024). Если все поля пустые/нулевые — параметр extra в ссылку
+	// не добавляется, сохраняя полную обратную совместимость.
+	XPaddingBytes        string
+	ScMaxEachPostBytes   int
+	ScMinPostsIntervalMs string
+	EnableXmux           bool
+	XmuxJSON             string
 }
 
 // xhttpConfigEnabled — рубильник транспорта. Выключенный XHTTP_CONFIG_ENABLED
@@ -126,6 +135,15 @@ func BuildXHTTPVLESSURLFromEndpoint(e XHTTPEndpoint, userUUID string) string {
 		"host=" + url.QueryEscape(host),
 		"path=" + url.QueryEscape(path),
 		"mode=" + url.QueryEscape(mode),
+	}
+
+	extraJSON, err := buildXHTTPExtra(e.XPaddingBytes, e.ScMaxEachPostBytes,
+		e.ScMinPostsIntervalMs, e.EnableXmux, e.XmuxJSON)
+	if err != nil {
+		return ""
+	}
+	if extraJSON != "" {
+		params = append(params, "extra="+url.QueryEscape(extraJSON))
 	}
 
 	return "vless://" + userUUID + "@" + address + ":" + strconv.Itoa(port) +

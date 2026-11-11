@@ -302,7 +302,7 @@ func (c *MetricsCollector) collectSubscriptionLifecycle(ctx context.Context) err
 // ложное «недоступен», а следующие метрики (пул, outbox, Postgres, лаг Kafka)
 // не собирались.
 func (c *MetricsCollector) collectNodes(ctx context.Context) error {
-	realityTargets := make(map[string][]string)
+	probeTargets := make(map[string][]string)
 	if rRows, rErr := c.pool.Query(ctx, `
 		SELECT COALESCE(server_key, ''), address, port
 		FROM vpn_reality_endpoints
@@ -313,13 +313,32 @@ func (c *MetricsCollector) collectNodes(ctx context.Context) error {
 			var port int
 			if scanErr := rRows.Scan(&sk, &addr, &port); scanErr == nil {
 				if hp := formatHostPort(addr, port, 8443); hp != "" {
-					realityTargets[sk] = append(realityTargets[sk], hp)
+					probeTargets[sk] = append(probeTargets[sk], hp)
 				}
 			}
 		}
 		rRows.Close()
 	} else {
 		slog.Warn("[metrics] load reality endpoints for node probes failed", "err", rErr)
+	}
+
+	if xRows, xErr := c.pool.Query(ctx, `
+		SELECT COALESCE(server_key, ''), address, port
+		FROM vpn_xhttp_endpoints
+		WHERE enabled = true AND server_key IS NOT NULL AND server_key <> ''
+	`); xErr == nil {
+		for xRows.Next() {
+			var sk, addr string
+			var port int
+			if scanErr := xRows.Scan(&sk, &addr, &port); scanErr == nil {
+				if hp := formatHostPort(addr, port, 443); hp != "" {
+					probeTargets[sk] = append(probeTargets[sk], hp)
+				}
+			}
+		}
+		xRows.Close()
+	} else {
+		slog.Warn("[metrics] load xhttp endpoints for node probes failed", "err", xErr)
 	}
 
 	type nodeRow struct {
@@ -368,7 +387,7 @@ func (c *MetricsCollector) collectNodes(ctx context.Context) error {
 		return err
 	}
 
-	// TCP-проверка VPN-портов (Reality / основной публичный адрес) всех
+	// TCP-проверка VPN-портов (Reality, XHTTP и основной публичный адрес) всех
 	// включённых нод — параллельно, не больше nodeProbeParallelism за раз.
 	probeAt := time.Now().UTC()
 	sem := make(chan struct{}, nodeProbeParallelism)
@@ -378,7 +397,7 @@ func (c *MetricsCollector) collectNodes(ctx context.Context) error {
 		if !n.enabled {
 			continue
 		}
-		targets := append([]string(nil), realityTargets[n.serverKey]...)
+		targets := append([]string(nil), probeTargets[n.serverKey]...)
 		if hp := formatHostPort(n.publicHost, n.port, 443); hp != "" {
 			targets = append(targets, hp)
 		}

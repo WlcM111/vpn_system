@@ -2,6 +2,7 @@ package vpn_orchestrator
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -31,6 +32,12 @@ type AdminXHTTPEndpointRequest struct {
 	Fingerprint string `json:"fingerprint,omitempty"`
 	ALPN        string `json:"alpn,omitempty"`
 	Remarks     string `json:"remarks,omitempty"`
+
+	XPaddingBytes        string `json:"x_padding_bytes,omitempty"`
+	ScMaxEachPostBytes   *int   `json:"sc_max_each_post_bytes,omitempty"`
+	ScMinPostsIntervalMs string `json:"sc_min_posts_interval_ms,omitempty"`
+	EnableXmux           bool   `json:"enable_xmux,omitempty"`
+	XmuxJSON             string `json:"xmux_json,omitempty"`
 }
 
 // ListEnabledXHTTPEndpoints возвращает включённые XHTTP-эндпоинты,
@@ -42,7 +49,9 @@ func (r *Repository) ListEnabledXHTTPEndpoints(ctx context.Context) ([]XHTTPEndp
 	rows, err := r.pool.Query(queryCtx, `
 		SELECT
 			xhttp_key, COALESCE(server_key, ''), enabled, sort_order, inbound_tag,
-			address, server_name, host, port, path, mode, fingerprint, alpn, remarks
+			address, server_name, host, port, path, mode, fingerprint, alpn, remarks,
+			x_padding_bytes, sc_max_each_post_bytes, sc_min_posts_interval_ms,
+			enable_xmux, xmux_json
 		FROM vpn_xhttp_endpoints
 		WHERE enabled = TRUE
 		ORDER BY sort_order, id
@@ -59,6 +68,8 @@ func (r *Repository) ListEnabledXHTTPEndpoints(ctx context.Context) ([]XHTTPEndp
 			&e.XHTTPKey, &e.ServerKey, &e.Enabled, &e.SortOrder, &e.InboundTag,
 			&e.Address, &e.ServerName, &e.Host, &e.Port, &e.Path,
 			&e.Mode, &e.Fingerprint, &e.ALPN, &e.Remarks,
+			&e.XPaddingBytes, &e.ScMaxEachPostBytes, &e.ScMinPostsIntervalMs,
+			&e.EnableXmux, &e.XmuxJSON,
 		); err != nil {
 			return nil, err
 		}
@@ -84,18 +95,33 @@ func (r *Repository) UpsertAdminXHTTPEndpoint(ctx context.Context, req AdminXHTT
 	if req.Port != nil && *req.Port > 0 {
 		port = *req.Port
 	}
+	scMaxEachPost := 0
+	if req.ScMaxEachPostBytes != nil {
+		scMaxEachPost = *req.ScMaxEachPostBytes
+	}
+	xmuxJSON := strings.TrimSpace(req.XmuxJSON)
+	enableXmux := req.EnableXmux
+	if _, err := buildXHTTPExtra(req.XPaddingBytes, scMaxEachPost, req.ScMinPostsIntervalMs, enableXmux, xmuxJSON); err != nil {
+		return err
+	}
+	if !enableXmux {
+		xmuxJSON = ""
+	}
 
 	_, err := r.pool.Exec(queryCtx, `
 		INSERT INTO vpn_xhttp_endpoints (
 			xhttp_key, server_key, enabled, sort_order, inbound_tag,
-			address, server_name, host, port, path, mode, fingerprint, alpn, remarks
+			address, server_name, host, port, path, mode, fingerprint, alpn, remarks,
+			x_padding_bytes, sc_max_each_post_bytes, sc_min_posts_interval_ms,
+			enable_xmux, xmux_json
 		) VALUES (
 			$1, $2, $3, $4, $5,
 			$6, $7, $8, $9, $10,
 			COALESCE(NULLIF($11, ''), 'auto'),
 			COALESCE(NULLIF($12, ''), 'chrome'),
 			COALESCE(NULLIF($13, ''), 'h2,http/1.1'),
-			$14
+			$14,
+			$15, $16, $17, $18, $19
 		)
 		ON CONFLICT (xhttp_key) DO UPDATE SET
 			server_key = EXCLUDED.server_key,
@@ -111,11 +137,18 @@ func (r *Repository) UpsertAdminXHTTPEndpoint(ctx context.Context, req AdminXHTT
 			fingerprint = EXCLUDED.fingerprint,
 			alpn = EXCLUDED.alpn,
 			remarks = EXCLUDED.remarks,
+			x_padding_bytes = EXCLUDED.x_padding_bytes,
+			sc_max_each_post_bytes = EXCLUDED.sc_max_each_post_bytes,
+			sc_min_posts_interval_ms = EXCLUDED.sc_min_posts_interval_ms,
+			enable_xmux = EXCLUDED.enable_xmux,
+			xmux_json = EXCLUDED.xmux_json,
 			updated_at = now()
 	`,
 		req.XHTTPKey, req.ServerKey, enabled, sortOrder, req.InboundTag,
 		req.Address, req.ServerName, req.Host, port, req.Path,
 		req.Mode, req.Fingerprint, req.ALPN, req.Remarks,
+		strings.TrimSpace(req.XPaddingBytes), scMaxEachPost, strings.TrimSpace(req.ScMinPostsIntervalMs),
+		enableXmux, xmuxJSON,
 	)
 	return err
 }
